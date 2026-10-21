@@ -16,13 +16,17 @@ export function useBuscarCargas() {
       dataFinal,
       idEmpresa,
       ocultarEnviadas,
+      apenasFusion,
     }: {
       dataInicial: string;
       dataFinal: string;
       idEmpresa?: number | null;
       ocultarEnviadas?: boolean;
+      apenasFusion?: boolean;
     }) =>
-      getCargasFusion(dataInicial, dataFinal, 100, idEmpresa, ocultarEnviadas).then((r) => r.cargas),
+      getCargasFusion(dataInicial, dataFinal, 100, idEmpresa, ocultarEnviadas, apenasFusion).then(
+        (r) => r.cargas
+      ),
   });
 }
 

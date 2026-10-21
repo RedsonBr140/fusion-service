@@ -79,7 +79,7 @@ class CissClientFalso:
         self._origem_pre_cargas = origem_pre_cargas or {}
         self.id_empresa_recebido = "não chamado"
 
-    def get_cargas(self, data_inicial, data_final, limite=100, id_empresa=None):
+    def get_cargas(self, data_inicial, data_final, limite=100, id_empresa=None, apenas_fusion=True):
         if self._erro is not None:
             raise self._erro
         self.id_empresa_recebido = id_empresa
@@ -122,7 +122,7 @@ class CissClientFalso:
             raise self._erro
         return self._origem_pre_cargas
 
-    def get_pre_cargas(self, data_inicial, data_final, limite=100, id_empresa=None):
+    def get_pre_cargas(self, data_inicial, data_final, limite=100, id_empresa=None, apenas_fusion=True):
         if self._erro is not None:
             raise self._erro
         self.id_empresa_recebido = id_empresa

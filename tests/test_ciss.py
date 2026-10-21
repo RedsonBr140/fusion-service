@@ -343,6 +343,53 @@ def test_get_cargas_filtra_por_empresa_quando_informado(monkeypatch):
     assert 5 in cursor.params_recebidos
 
 
+def test_get_cargas_filtra_por_integracao_fusion_por_padrao(monkeypatch):
+    """LOCAL_RETIRADA.FLAGUTILIZAINTEGRACAOFUSION — achado em produção: das
+    cargas desde o corte de integração, ~89% vêm de local de retirada sem
+    a integração marcada (venda balcão/"FR CAIXA"), que nunca deveriam
+    aparecer aqui. Filtrado por padrão, com escape via apenas_fusion=False."""
+    from datetime import datetime
+
+    _, _, cursor = montar_driver(monkeypatch, description=[("IDEMPRESA",)], linhas=[])
+
+    CissClient(DB).get_cargas(datetime(2026, 10, 1), datetime(2026, 10, 14))
+
+    assert "FLAGUTILIZAINTEGRACAOFUSION" in cursor.sql_executado
+
+
+def test_get_cargas_apenas_fusion_false_nao_filtra(monkeypatch):
+    from datetime import datetime
+
+    _, _, cursor = montar_driver(monkeypatch, description=[("IDEMPRESA",)], linhas=[])
+
+    CissClient(DB).get_cargas(datetime(2026, 10, 1), datetime(2026, 10, 14), apenas_fusion=False)
+
+    assert "FLAGUTILIZAINTEGRACAOFUSION" not in cursor.sql_executado
+
+
+def test_get_pre_cargas_filtra_por_integracao_fusion_por_padrao(monkeypatch):
+    """Mesmo critério de get_cargas, mas PRE_CARGA_PROD usa IDPONTORETIRADA,
+    não IDLOCALRETIRADA — mesmo espaço de id de LOCAL_RETIRADA."""
+    from datetime import datetime
+
+    _, _, cursor = montar_driver(monkeypatch, description=[("IDEMPRESA",)], linhas=[])
+
+    CissClient(DB).get_pre_cargas(datetime(2026, 10, 1), datetime(2026, 10, 14))
+
+    assert "FLAGUTILIZAINTEGRACAOFUSION" in cursor.sql_executado
+    assert "IDPONTORETIRADA" in cursor.sql_executado
+
+
+def test_get_pre_cargas_apenas_fusion_false_nao_filtra(monkeypatch):
+    from datetime import datetime
+
+    _, _, cursor = montar_driver(monkeypatch, description=[("IDEMPRESA",)], linhas=[])
+
+    CissClient(DB).get_pre_cargas(datetime(2026, 10, 1), datetime(2026, 10, 14), apenas_fusion=False)
+
+    assert "FLAGUTILIZAINTEGRACAOFUSION" not in cursor.sql_executado
+
+
 def test_get_cliente_fusion_filtra_por_idclifor_e_ativo(monkeypatch):
     _, _, cursor = montar_driver(monkeypatch, description=[("CODIGO_CLIENTE",)], linhas=[])
 

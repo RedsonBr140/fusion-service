@@ -116,13 +116,18 @@ export function getCargasFusion(
   idEmpresa?: number | null,
   // false mostra também carga já enviada (de verdade ou marcada
   // manualmente) — omitido/true esconde, o padrão do backend.
-  ocultarEnviadas = true
+  ocultarEnviadas = true,
+  // false também mostra cargas de local de retirada sem a integração
+  // Fusion marcada (ex. venda balcão/"FR CAIXA") — omitido/true esconde,
+  // o padrão do backend (LOCAL_RETIRADA.FLAGUTILIZAINTEGRACAOFUSION).
+  apenasFusion = true
 ): Promise<{ cargas: CargaResumo[] }> {
   const parametros = new URLSearchParams({
     data_inicial: dataInicial,
     data_final: dataFinal,
     limite: String(limite),
     ocultar_enviadas: ocultarEnviadas ? "1" : "0",
+    apenas_fusion: apenasFusion ? "1" : "0",
   });
   if (idEmpresa != null) parametros.set("id_empresa", String(idEmpresa));
   return request(`/api/cargas?${parametros}`);
@@ -186,13 +191,15 @@ export function getPreCargasFusion(
   dataFinal: string,
   limite = 100,
   idEmpresa?: number | null,
-  ocultarEnviadas = true
+  ocultarEnviadas = true,
+  apenasFusion = true
 ): Promise<{ pre_cargas: PreCargaResumo[] }> {
   const parametros = new URLSearchParams({
     data_inicial: dataInicial,
     data_final: dataFinal,
     limite: String(limite),
     ocultar_enviadas: ocultarEnviadas ? "1" : "0",
+    apenas_fusion: apenasFusion ? "1" : "0",
   });
   if (idEmpresa != null) parametros.set("id_empresa", String(idEmpresa));
   return request(`/api/pre-cargas?${parametros}`);

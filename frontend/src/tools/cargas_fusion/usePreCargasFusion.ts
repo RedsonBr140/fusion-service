@@ -16,13 +16,15 @@ export function useBuscarPreCargas() {
       dataFinal,
       idEmpresa,
       ocultarEnviadas,
+      apenasFusion,
     }: {
       dataInicial: string;
       dataFinal: string;
       idEmpresa?: number | null;
       ocultarEnviadas?: boolean;
+      apenasFusion?: boolean;
     }) =>
-      getPreCargasFusion(dataInicial, dataFinal, 100, idEmpresa, ocultarEnviadas).then(
+      getPreCargasFusion(dataInicial, dataFinal, 100, idEmpresa, ocultarEnviadas, apenasFusion).then(
         (r) => r.pre_cargas
       ),
   });

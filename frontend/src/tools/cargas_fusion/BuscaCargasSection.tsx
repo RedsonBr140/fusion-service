@@ -158,6 +158,7 @@ export function BuscaCargasSection({ cargaPreSelecionada }: Props) {
   const [filtroEmpresaId, setFiltroEmpresaId] = useState<number | null>(null);
   const [ocultarEnviadas, setOcultarEnviadas] = useState(true);
   const [mostrarPreCargas, setMostrarPreCargas] = useState(true);
+  const [apenasFusion, setApenasFusion] = useState(true);
   const [selecionada, setSelecionada] = useState<Selecionada | null>(
     cargaPreSelecionada ? { tipo: "carga", ...cargaPreSelecionada } : null
   );
@@ -243,8 +244,14 @@ export function BuscaCargasSection({ cargaPreSelecionada }: Props) {
     enviar.reset();
     enviarPreCarga.reset();
     marcarIntegrada.reset();
-    busca.mutate({ dataInicial, dataFinal, idEmpresa: filtroEmpresaId, ocultarEnviadas });
-    buscaPreCargas.mutate({ dataInicial, dataFinal, idEmpresa: filtroEmpresaId, ocultarEnviadas });
+    busca.mutate({ dataInicial, dataFinal, idEmpresa: filtroEmpresaId, ocultarEnviadas, apenasFusion });
+    buscaPreCargas.mutate({
+      dataInicial,
+      dataFinal,
+      idEmpresa: filtroEmpresaId,
+      ocultarEnviadas,
+      apenasFusion,
+    });
   }
 
   function selecionar(linha: Linha) {
@@ -400,7 +407,21 @@ export function BuscaCargasSection({ cargaPreSelecionada }: Props) {
           />
           Mostrar pré-cargas
         </label>
+        <label className="flex w-fit items-center gap-2 text-sm text-foreground">
+          <input
+            type="checkbox"
+            className="size-4 accent-primary"
+            checked={apenasFusion}
+            onChange={(e) => setApenasFusion(e.target.checked)}
+          />
+          Só cargas com integração Fusion
+        </label>
       </div>
+
+      <p className="text-xs text-muted-foreground">
+        A maioria das cargas é venda balcão (retirada na hora, sem entrega) e nunca aparece aqui por
+        padrão. Desmarque "Só cargas com integração Fusion" se a carga que você procura não aparecer.
+      </p>
 
       <p className="text-xs text-muted-foreground">
         Cargas de antes de 10/09/2026 06:00 nunca aparecem — até lá, a roteirização era

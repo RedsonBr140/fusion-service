@@ -329,6 +329,27 @@ do fluxo que este serviço gerencia, e têm dados inconsistentes
 `PLACATRANSP` em formato inconsistente) justamente por serem de outro
 sistema, não por serem "dado ruim".
 
+### Filtro por local de retirada com integração Fusion marcada
+
+`LOCAL_RETIRADA.FLAGUTILIZAINTEGRACAOFUSION` — achado em produção: das
+20523 cargas desde o corte de integração (ver acima), só ~10.6% vêm de um
+local de retirada marcado `'T'` nessa coluna. Os outros ~89.4% são
+locais nomeados `"FR CAIXA ..."` (frente de caixa — venda balcão, cliente
+leva o produto na hora) — sem motorista, veículo ou entrega nenhuma,
+nunca deveriam aparecer numa tela de roteirização. Confirmado que uma
+carga nunca mistura locais com flags diferentes entre seus itens.
+
+`PRODUTO_RETIRADO.IDLOCALRETIRADA` é a chave pra carga real (a própria
+`RETIRADA_PRODUTOS` não tem essa coluna, só o item). Pré-carga usa
+`PRE_CARGA_PROD.IDPONTORETIRADA` — nome de coluna diferente, mas mesmo
+espaço de id de `LOCAL_RETIRADA.IDLOCALRETIRADA` (confirmado comparando
+amostras). `get_cargas`/`get_pre_cargas` filtram por padrão
+(`apenas_fusion=True`, via `EXISTS` correlacionado — nunca `JOIN` direto,
+que duplicaria linha por item) — `_FILTRO_FUSION_CARGA`/
+`_FILTRO_FUSION_PRE_CARGA` em `integrations/ciss.py`. A tela expõe isso
+como checkbox ("Só cargas com integração Fusion", marcado por padrão) —
+desmarcar mostra tudo, pro caso de uma carga esperada não aparecer.
+
 ## Métodos do WSDL não implementados
 
 `atualizaCarga`/`cancelaCarga` (atualizar `dt_saida`/motorista/veículo ou

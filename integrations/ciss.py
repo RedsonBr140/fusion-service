@@ -192,6 +192,29 @@ class CissClient:
         "LEFT JOIN CLIENTE_FORNECEDOR CF_MOT ON CF_MOT.IDCLIFOR = RP.IDMOTORISTA "
     )
 
+    # LOCAL_RETIRADA.FLAGUTILIZAINTEGRACAOFUSION — achado em produção: das
+    # 20523 cargas desde o corte de integração, só ~10.6% vêm de um local
+    # de retirada marcado 'T' (entrega de verdade, ex. "... A ENTREGAR");
+    # os outros ~89.4% são "FR CAIXA ..." — venda balcão, retirada na hora,
+    # sem motorista/veículo/entrega nenhuma, nunca deveriam aparecer aqui.
+    # Uma carga nunca mistura locais com flags diferentes (confirmado
+    # contra a mesma amostra) — EXISTS evita duplicar linha por item.
+    _FILTRO_FUSION_CARGA = (
+        "AND EXISTS (SELECT 1 FROM PRODUTO_RETIRADO PR_FUS "
+        "JOIN LOCAL_RETIRADA LR_FUS ON LR_FUS.IDLOCALRETIRADA = PR_FUS.IDLOCALRETIRADA "
+        "WHERE PR_FUS.IDEMPRESA = RP.IDEMPRESA AND PR_FUS.IDPLANILHA = RP.IDPLANILHA "
+        "AND LR_FUS.FLAGUTILIZAINTEGRACAOFUSION = 'T') "
+    )
+    # PRE_CARGA_PROD usa IDPONTORETIRADA, não IDLOCALRETIRADA — mesmo
+    # espaço de id que LOCAL_RETIRADA.IDLOCALRETIRADA (confirmado contra
+    # amostra: os valores coincidem), só nome de coluna diferente.
+    _FILTRO_FUSION_PRE_CARGA = (
+        "AND EXISTS (SELECT 1 FROM PRE_CARGA_PROD PCP_FUS "
+        "JOIN LOCAL_RETIRADA LR_FUS ON LR_FUS.IDLOCALRETIRADA = PCP_FUS.IDPONTORETIRADA "
+        "WHERE PCP_FUS.IDPRECARGA = PC.IDPRECARGA "
+        "AND LR_FUS.FLAGUTILIZAINTEGRACAOFUSION = 'T') "
+    )
+
     _COLUNAS_PRE_CARGA = (
         "PC.IDPRECARGA, PC.IDEMPRESA, PC.DESCRPRECARGA, PC.DTMOVIMENTO, "
         "PC.DTALTERACAO, PC.FLAGCONFERIDA, PC.IDSTATUS, PC.IDUSUARIO"
@@ -224,15 +247,19 @@ class CissClient:
         data_final: datetime,
         limite: int = 100,
         id_empresa: int | None = None,
+        apenas_fusion: bool = True,
     ) -> list[dict[str, object]]:
         """Cargas no período, nunca antes da migração para esta integração.
 
         `data_inicial` é elevado ao corte quando vier anterior a ele.
         `id_empresa` filtra para uma única empresa quando informado —
-        omitido, traz todas.
+        omitido, traz todas. `apenas_fusion=False` inclui também cargas de
+        local de retirada sem a integração marcada (ex. venda balcão) —
+        ver `_FILTRO_FUSION_CARGA`.
         """
         inicio_efetivo = max(data_inicial, CORTE_INTEGRACAO_PROPRIA)
         filtro_empresa = "AND RP.IDEMPRESA = ? " if id_empresa is not None else ""
+        filtro_fusion = self._FILTRO_FUSION_CARGA if apenas_fusion else ""
         params: list[object] = [inicio_efetivo, data_final]
         if id_empresa is not None:
             params.append(id_empresa)
@@ -244,6 +271,7 @@ class CissClient:
             f"{self._JOIN_MOTORISTA}"
             "WHERE RP.DTALTERACAO BETWEEN ? AND ? "
             f"{filtro_empresa}"
+            f"{filtro_fusion}"
             "ORDER BY RP.DTALTERACAO DESC "
             "FETCH FIRST ? ROWS ONLY",
             tuple(params),
@@ -342,11 +370,14 @@ class CissClient:
         data_final: datetime,
         limite: int = 100,
         id_empresa: int | None = None,
+        apenas_fusion: bool = True,
     ) -> list[dict[str, object]]:
         """Pré-cargas no período. Sem corte de data equivalente ao de
         `get_cargas` — a integração nativa do Fusion nunca lidou com
-        pré-carga."""
+        pré-carga. `apenas_fusion` segue o mesmo critério de `get_cargas`
+        (ver `_FILTRO_FUSION_PRE_CARGA`)."""
         filtro_empresa = "AND PC.IDEMPRESA = ? " if id_empresa is not None else ""
+        filtro_fusion = self._FILTRO_FUSION_PRE_CARGA if apenas_fusion else ""
         params: list[object] = [data_inicial, data_final]
         if id_empresa is not None:
             params.append(id_empresa)
@@ -356,6 +387,7 @@ class CissClient:
             "FROM PRE_CARGA PC "
             "WHERE PC.DTMOVIMENTO BETWEEN ? AND ? "
             f"{filtro_empresa}"
+            f"{filtro_fusion}"
             "ORDER BY PC.DTMOVIMENTO DESC "
             "FETCH FIRST ? ROWS ONLY",
             tuple(params),

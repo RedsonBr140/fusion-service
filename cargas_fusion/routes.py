@@ -184,11 +184,14 @@ def buscar_cargas():
         return jsonify({"error": MSG_CISS_NAO_CONFIGURADO}), 503
 
     ocultar_enviadas = request.args.get("ocultar_enviadas", "1") != "0"
+    apenas_fusion = request.args.get("apenas_fusion", "1") != "0"
 
     try:
         limite = int(request.args.get("limite") or 100)
         id_empresa = _inteiro_ou_none(request.args.get("id_empresa"))
-        cargas = client.get_cargas(inicio, fim, limite=limite, id_empresa=id_empresa)
+        cargas = client.get_cargas(
+            inicio, fim, limite=limite, id_empresa=id_empresa, apenas_fusion=apenas_fusion
+        )
         cargas_com_pedido = client.get_cargas_com_pedido_resolvido(
             [(carga["IDEMPRESA"], carga["IDPLANILHA"]) for carga in cargas]
         )
@@ -350,11 +353,14 @@ def buscar_pre_cargas():
         return jsonify({"error": MSG_CISS_NAO_CONFIGURADO}), 503
 
     ocultar_enviadas = request.args.get("ocultar_enviadas", "1") != "0"
+    apenas_fusion = request.args.get("apenas_fusion", "1") != "0"
 
     try:
         limite = int(request.args.get("limite") or 100)
         id_empresa = _inteiro_ou_none(request.args.get("id_empresa"))
-        pre_cargas = client.get_pre_cargas(inicio, fim, limite=limite, id_empresa=id_empresa)
+        pre_cargas = client.get_pre_cargas(
+            inicio, fim, limite=limite, id_empresa=id_empresa, apenas_fusion=apenas_fusion
+        )
     except CissDbError:
         return jsonify({"error": MSG_CISS_INDISPONIVEL}), 503
 
