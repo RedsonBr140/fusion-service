@@ -1,0 +1,1179 @@
+"""Testes de cargas_fusion/service.py (porte de meta-natal) — cadastro local (SQLite real,
+via database.init_database) e montagem do payload do saveCarga. O Fusion é
+sempre um dublê: nenhum teste aqui toca a rede.
+"""
+
+import re
+from datetime import datetime, timedelta
+
+import pytest
+
+from database import connect, init_database
+from integrations.fusion import FusionUnavailable
+from integrations.fusion_portal import FusionPortalError
+from cargas_fusion import service
+
+
+class FusionPortalClienteFalso:
+    """Dublê de integrations.fusion_portal.FusionPortalClient — motorista
+    não tem mais tabela local (2026-10-20), é lido ao vivo do Fusion."""
+
+    def __init__(self, motoristas: dict | None = None, erro=None):
+        self._motoristas = motoristas or {}
+        self._erro = erro
+
+    def motorista_por_codigo_erp(self, codigo_erp):
+        if self._erro is not None:
+            raise self._erro
+        return self._motoristas.get(codigo_erp)
+
+    def buscar_motoristas(self, termo, *, rows=20):
+        if self._erro is not None:
+            raise self._erro
+        termo_up = termo.upper()
+        return [m for m in self._motoristas.values() if termo_up in m["nome"].upper()]
+
+
+@pytest.fixture
+def conn(tmp_path):
+    db_path = tmp_path / "toolkit.db"
+    init_database(db_path)
+    conexao = connect(db_path)
+    yield conexao
+    conexao.close()
+
+
+# --- normalizar_placa -----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "entrada,esperado",
+    [
+        ("KGJ-6098", "KGJ6098"),
+        ("kgj 6098", "KGJ6098"),
+        ("KGJ6098", "KGJ6098"),
+        ("", ""),
+        (None, ""),
+    ],
+)
+def test_normalizar_placa(entrada, esperado):
+    assert service.normalizar_placa(entrada) == esperado
+
+
+# --- veículo ----------------------------------------------------------------
+
+
+def test_salvar_veiculo_exige_placa_e_codigo_erp(conn):
+    with pytest.raises(ValueError, match="placa"):
+        service.salvar_veiculo(conn, {"codigo_erp": "V-1"})
+
+    with pytest.raises(ValueError, match="codigo_erp"):
+        service.salvar_veiculo(conn, {"placa": "KGJ-6098"})
+
+
+def test_salvar_veiculo_cria_e_normaliza_a_placa(conn):
+    linha = service.salvar_veiculo(conn, {"placa": "kgj-6098", "codigo_erp": "7"})
+
+    assert linha["placa"] == "KGJ6098"
+    assert linha["codigo_erp"] == "7"
+    assert linha["ativo"] is True
+
+
+def test_salvar_veiculo_e_upsert_pela_placa(conn):
+    service.salvar_veiculo(conn, {"placa": "KGJ-6098", "codigo_erp": "7", "descricao": "A"})
+    atualizado = service.salvar_veiculo(conn, {"placa": "KGJ6098", "codigo_erp": "7", "descricao": "B"})
+
+    todos = service.listar_veiculos(conn)
+    assert len(todos) == 1
+    assert atualizado["descricao"] == "B"
+
+
+def test_buscar_veiculo_por_placa_normaliza_a_busca(conn):
+    service.salvar_veiculo(conn, {"placa": "KGJ-6098", "codigo_erp": "7"})
+
+    assert service.buscar_veiculo_por_placa(conn, "kgj 6098") is not None
+    assert service.buscar_veiculo_por_placa(conn, "nao-existe") is None
+
+
+def test_listar_veiculos_filtra_por_ativo(conn):
+    linha = service.salvar_veiculo(conn, {"placa": "KGJ-6098", "codigo_erp": "7"})
+    service.atualizar_veiculo(conn, linha["id"], {"ativo": False})
+
+    assert service.listar_veiculos(conn, apenas_ativos=True) == []
+    assert len(service.listar_veiculos(conn, apenas_ativos=False)) == 1
+
+
+def test_atualizar_veiculo_inexistente_devolve_none(conn):
+    assert service.atualizar_veiculo(conn, 999, {"descricao": "x"}) is None
+
+
+def test_veiculo_local_para_envio_fusion_tem_o_shape_do_savecarga():
+    linha = {
+        "codigo_erp": "7", "placa": "KGJ6098", "descricao": "WOLKS", "modelo": "15-190",
+        "ano_modelo": 2013, "ano_fabricacao": 2013, "peso_max_entregas": 7000.0,
+        "volume_max_entregas": 8.19, "qtd_pallets_veiculo": 10.0,
+    }
+
+    payload = service.veiculo_local_para_envio_fusion(linha)
+
+    assert payload["codigo_erp"] == "7"
+    assert payload["anoModelo"] == "2013"
+    assert payload["anoFabricacao"] == "2013"
+    assert payload["peso_max_entregas"] == 7000.0
+
+
+# --- motorista (lido ao vivo do Fusion, 2026-10-20) -------------------------
+
+
+def test_motorista_sugerido_casa_pelo_codigo_erp_do_idmotorista():
+    """IDMOTORISTA do CISS é o IDCLIFOR, e por convenção (mesma do
+    cliente) é também o codigo_erp com que o motorista foi cadastrado no
+    Fusion."""
+    motorista = {"codigo_erp": "63588", "nome": "Fulano"}
+    portal = FusionPortalClienteFalso({"63588": motorista})
+
+    assert service.motorista_sugerido(portal, 63588) == motorista
+    assert service.motorista_sugerido(portal, 99999) is None
+    assert service.motorista_sugerido(portal, None) is None
+    assert service.motorista_sugerido(None, 63588) is None
+
+
+def test_motorista_sugerido_falha_no_portal_devolve_none_sem_subir():
+    portal = FusionPortalClienteFalso(erro=FusionPortalError("fora do ar"))
+
+    assert service.motorista_sugerido(portal, 63588) is None
+
+
+def test_motorista_por_codigo_erp():
+    motorista = {"codigo_erp": "M-1", "nome": "Fulano"}
+    portal = FusionPortalClienteFalso({"M-1": motorista})
+
+    assert service.motorista_por_codigo_erp(portal, "M-1") == motorista
+    assert service.motorista_por_codigo_erp(portal, "nao-existe") is None
+    assert service.motorista_por_codigo_erp(portal, None) is None
+    assert service.motorista_por_codigo_erp(None, "M-1") is None
+
+
+def test_motorista_por_codigo_erp_falha_no_portal_devolve_none_sem_subir():
+    portal = FusionPortalClienteFalso(erro=FusionPortalError("fora do ar"))
+
+    assert service.motorista_por_codigo_erp(portal, "M-1") is None
+
+
+def test_buscar_motoristas_fusion_busca_por_nome():
+    motorista = {"codigo_erp": "M-1", "nome": "Fulano de Tal"}
+    portal = FusionPortalClienteFalso({"M-1": motorista})
+
+    assert service.buscar_motoristas_fusion(portal, "fulano") == [motorista]
+    assert service.buscar_motoristas_fusion(portal, "") == []
+    assert service.buscar_motoristas_fusion(None, "fulano") == []
+
+
+def test_buscar_motoristas_fusion_propaga_erro_do_portal():
+    """Diferente de motorista_sugerido/motorista_por_codigo_erp: aqui é
+    uma busca explícita de quem está montando o envio, não deve falhar
+    em silêncio."""
+    portal = FusionPortalClienteFalso(erro=FusionPortalError("fora do ar"))
+
+    with pytest.raises(FusionPortalError):
+        service.buscar_motoristas_fusion(portal, "fulano")
+
+
+def test_salvar_ajudante_nao_quebra_sem_as_colunas_de_motorista(conn):
+    """fusion_ajudantes não tem cpf/telefone/endereco/uf/cidade/cep — a
+    tentativa de inserir essas colunas quebraria com 'no such column'."""
+    linha = service.salvar_ajudante(conn, {"codigo_erp": "A-1", "nome": "Ciclano"})
+
+    assert linha["codigo_erp"] == "A-1"
+    assert "cpf" not in linha
+
+
+def test_atualizar_ajudante_ignora_campos_que_nao_existem_na_tabela(conn):
+    linha = service.salvar_ajudante(conn, {"codigo_erp": "A-1", "nome": "Ciclano"})
+
+    atualizado = service.atualizar_ajudante(conn, linha["id"], {"nome": "Beltrano", "cpf": "123"})
+
+    assert atualizado["nome"] == "Beltrano"
+    assert "cpf" not in atualizado
+
+
+def test_pessoa_local_para_envio_fusion_marca_o_tipo():
+    linha = {"codigo_erp": "M-1", "nome": "Fulano", "cpf": "", "telefone": "", "endereco": "", "uf": "", "cidade": "", "cep": ""}
+
+    payload = service._pessoa_local_para_envio_fusion(linha, "Ajudante")
+
+    assert payload["tipo"] == "Ajudante"
+    assert payload["codigo_erp"] == "M-1"
+
+
+# --- sincronizar_veiculo ------------------------------------------------
+
+
+class FusionClienteFalso:
+    def __init__(self, veiculo_encontrado=None, erro=None):
+        self._veiculo_encontrado = veiculo_encontrado
+        self._erro = erro
+        self.enviados_veiculo = None
+        self.enviados_motorista = None
+
+    def consultar_veiculo(self, placa_ou_id):
+        if self._erro is not None:
+            raise self._erro
+        return self._veiculo_encontrado
+
+    def send_veiculos(self, veiculos):
+        if self._erro is not None:
+            raise self._erro
+        self.enviados_veiculo = veiculos
+
+    def send_motoristas(self, motoristas):
+        if self._erro is not None:
+            raise self._erro
+        self.enviados_motorista = motoristas
+
+
+def test_sincronizar_veiculo_sem_cadastro_local_falha(conn):
+    with pytest.raises(service.SincronizacaoFusionError, match="localmente"):
+        service.sincronizar_veiculo(conn, FusionClienteFalso(), "KGJ-6098")
+
+
+def test_sincronizar_veiculo_sem_fusion_configurado_falha(conn):
+    service.salvar_veiculo(conn, {"placa": "KGJ-6098", "codigo_erp": "7"})
+
+    with pytest.raises(service.SincronizacaoFusionError, match="não configurado"):
+        service.sincronizar_veiculo(conn, None, "KGJ-6098")
+
+
+def test_sincronizar_veiculo_usa_o_dado_do_fusion_quando_encontrado(conn):
+    service.salvar_veiculo(conn, {"placa": "KGJ-6098", "codigo_erp": "velho", "descricao": "velho"})
+    fusion = FusionClienteFalso(
+        veiculo_encontrado={"codigoErp": "7", "descricao": "WOLKS 15-190 KGJ-6098", "anoModelo": "2013"}
+    )
+
+    atualizado = service.sincronizar_veiculo(conn, fusion, "KGJ-6098")
+
+    assert atualizado["codigo_erp"] == "7"
+    assert atualizado["descricao"] == "WOLKS 15-190 KGJ-6098"
+    assert atualizado["ano_modelo"] == 2013
+
+
+def test_sincronizar_veiculo_envia_o_local_quando_nao_existe_no_fusion(conn):
+    service.salvar_veiculo(conn, {"placa": "KGJ-6098", "codigo_erp": "7"})
+    fusion = FusionClienteFalso(veiculo_encontrado=None)
+
+    resultado = service.sincronizar_veiculo(conn, fusion, "KGJ-6098")
+
+    assert fusion.enviados_veiculo == [service.veiculo_local_para_envio_fusion(resultado)]
+
+
+def test_sincronizar_veiculo_propaga_indisponibilidade(conn):
+    service.salvar_veiculo(conn, {"placa": "KGJ-6098", "codigo_erp": "7"})
+    fusion = FusionClienteFalso(erro=FusionUnavailable())
+
+    with pytest.raises(service.SincronizacaoFusionError):
+        service.sincronizar_veiculo(conn, fusion, "KGJ-6098")
+
+
+# --- sincronizar motorista/ajudante --------------------------------------
+
+
+def test_sincronizar_ajudante_marca_o_tipo_ajudante(conn):
+    linha = service.salvar_ajudante(conn, {"codigo_erp": "A-1", "nome": "Ciclano"})
+    fusion = FusionClienteFalso()
+
+    service.sincronizar_ajudante(conn, fusion, linha["id"])
+
+    assert fusion.enviados_motorista[0]["tipo"] == "Ajudante"
+
+
+def test_sincronizar_pessoa_inexistente_falha(conn):
+    with pytest.raises(service.SincronizacaoFusionError, match="não encontrado"):
+        service.sincronizar_ajudante(conn, FusionClienteFalso(), 999)
+
+
+def test_sincronizar_pessoa_sem_fusion_falha(conn):
+    linha = service.salvar_ajudante(conn, {"codigo_erp": "A-1", "nome": "Ciclano"})
+
+    with pytest.raises(service.SincronizacaoFusionError, match="não configurado"):
+        service.sincronizar_ajudante(conn, None, linha["id"])
+
+
+# --- montagem do payload --------------------------------------------------
+
+
+def test_codigo_carga_e_codigo_pedido():
+    assert service.codigo_carga(3, 22099141) == "3_22099141"
+    assert service.codigo_pedido(22094297, 22099141) == "22094297_22099141"
+
+
+DETALHE = {
+    "IDEMPRESA": 3,
+    "IDPLANILHA": 22099141,
+    "UF": "PE",
+    "DESCRCIDADE": "RECIFE",
+    "OBSERVACAO": None,
+    "DTHORASAIDA": None,
+}
+
+ITEM = {
+    "IDPLANILHADOCORI": 22083047,
+    "IDORCAMENTO": 612442,
+    "IDSUBPRODUTO": 141624,
+    "NUMNOTA": 165858,
+    "SERIENOTA": "2",
+    "IDCLIFOR": 26623,
+    "IDCLIFORENTREGA": 26623,
+    "VALTOTLIQUIDO": 730.01,
+    "PESOBRUTO": 0.5,
+    "DESCRCOMPRODUTO": "MINI CHURRASQUEIRA PRE MOLDADO TIJOLINHO COM BALCAO VERMELHA",
+}
+
+CLIENTE = {
+    "CODIGO_CLIENTE": 26623,
+    "RAZAO_CLIENTE": "FULANO",
+    "DESCR_CLIENTE": "FULANO",
+    "CNPJ_CLIENTE": "12345678900",
+    "END_CLIENTE": "RUA X",
+    "BAIRRO_CLIENTE": "CENTRO",
+    "CIDADE_CLIENTE": "RECIFE",
+    "UF_CLIENTE": "PE",
+    "CEP_CLIENTE": "50000000",
+}
+
+MOTORISTA = {"codigo_erp": "M-1", "nome": "Fulano", "cpf": "", "telefone": "", "endereco": "", "uf": "", "cidade": "", "cep": ""}
+VEICULO = {"codigo_erp": "V-1", "placa": "KGJ6098", "descricao": "WOLKS", "modelo": "15-190", "ano_modelo": 2013, "ano_fabricacao": 2013, "peso_max_entregas": 7000.0, "volume_max_entregas": 8.0, "qtd_pallets_veiculo": 10.0}
+
+
+def test_montar_payload_carga_monta_entrega_e_carga():
+    payload_carga, entregas_servico, avisos = service.montar_payload_carga(
+        DETALHE, [ITEM], {26623: CLIENTE}, MOTORISTA, VEICULO
+    )
+
+    assert avisos == []
+    assert payload_carga["cargas"][0]["codigo_erp"] == "3_22099141"
+    assert payload_carga["cargas"][0]["codmotorista"] == "M-1"
+    assert payload_carga["cargas"][0]["codveiculo"] == "V-1"
+    assert payload_carga["cargas"][0]["destino"] == "RECIFE/PE"
+
+    # entrega[] do saveCarga é um stub mínimo (D10) — não carrega valor/peso/cliente.
+    # "612442" é o IDORCAMENTO real (não o IDPLANILHADOCORI=22083047,
+    # que é só a pré-nota) — confirmado contra produção (carga 1_22100858).
+    assert payload_carga["entrega"][0]["pedido_erp"] == "612442_22099141"
+    assert payload_carga["entrega"][0]["codigo_erp_filial_fat"] == "3"
+    assert payload_carga["entrega"][0]["codigo_erp_filial_log"] == "3"
+    assert payload_carga["entrega"][0]["codigo_erp_filial_digit"] == "3"
+    # Confirmado em produção: o Fusion exige filial_padrao/codigo_cliente
+    # direto na entrega (não só dentro de cliente{}), e cubagem/peso/
+    # podeformarcarga, mesmo sem fonte real de cubagem (cai pra "0.000",
+    # nunca "0" puro — ver _numero_informado).
+    assert payload_carga["entrega"][0]["filial_padrao"] == "3"
+    assert payload_carga["entrega"][0]["codigo_cliente"] == "26623"
+    assert payload_carga["entrega"][0]["cubagem"] == "0.000"
+    assert payload_carga["entrega"][0]["peso"] == "0.500"
+    assert payload_carga["entrega"][0]["podeformarcarga"] == "N"
+    assert payload_carga["entrega"][0]["cliente"] == {
+        "filial_padrao": "3",
+        "codigo_cliente": "26623",
+        # "1", nunca "0" — o Fusion trata "0" como vazio (empty() do PHP).
+        "cliente_cod_praca_erp": "1",
+        "cliente_descricao_praca": ".",
+        "cliente_cod_rota_erp": "1",
+        "cliente_descricao_rota": ".",
+    }
+    assert payload_carga["cargas"][0]["entregas_carga"] == [
+        {"pedido_erp": "612442_22099141", "codigo_erp_filial": "3", "seq_entrega": "1"}
+    ]
+
+    # O detalhe do pedido (valor/peso/itens de produto) vai para saveEntregaServico.
+    assert entregas_servico[0]["pedido_erp"] == "612442_22099141"
+    assert entregas_servico[0]["status"] == "1"
+    assert entregas_servico[0]["ent_ou_serv"] == "Entrega"
+    assert entregas_servico[0]["valor"] == "730.01"
+    assert entregas_servico[0]["peso"] == "0.500"
+    assert entregas_servico[0]["cubagem"] == "0.000"
+    assert entregas_servico[0]["podeformarcarga"] == "N"
+    assert entregas_servico[0]["codigo_cliente"] == "26623"
+    assert entregas_servico[0]["filial_padrao"] == "3"
+    assert entregas_servico[0]["empresa_fat"] == "3"
+    assert entregas_servico[0]["itens"] == [
+        {
+            "cod_produto_erp": "141624",
+            "qtd": "0",
+            "peso": "0.5",
+            "preco": "730.010",
+            "subtotal": "730.010",
+            "descricao": "MINI CHURRASQUEIRA PRE MOLDADO TIJOLINHO COM BALCAO VERMELHA",
+        }
+    ]
+
+
+def test_montar_payload_carga_ignora_pedido_sem_orcamento_vinculado():
+    """Quando get_itens_carga não resolveu IDORCAMENTO (carga sem origem em
+    orçamento, ou NF/pedido ainda não gerados), a entrega não entra no
+    envio — nem em saveCarga, nem em saveEntregaServico — só o aviso."""
+    item_sem_orcamento = {**ITEM, "IDORCAMENTO": None}
+    payload_carga, entregas_servico, avisos = service.montar_payload_carga(
+        DETALHE, [item_sem_orcamento], {26623: CLIENTE}, MOTORISTA, VEICULO
+    )
+
+    assert payload_carga["entrega"] == []
+    assert entregas_servico == []
+    assert any("Pedido (orçamento)" in a for a in avisos)
+
+
+def test_montar_payload_carga_envia_pedidos_com_orcamento_ignorando_os_sem():
+    """Uma carga com pedidos mistos (com e sem orçamento) envia só os que
+    têm IDORCAMENTO — a seq_entrega não pula número por causa do ignorado."""
+    item_sem_orcamento = {
+        **ITEM, "IDORCAMENTO": None, "IDPLANILHADOCORI": 999999, "NUMSEQUENCIA": 99,
+    }
+    payload_carga, entregas_servico, avisos = service.montar_payload_carga(
+        DETALHE, [item_sem_orcamento, ITEM], {26623: CLIENTE}, MOTORISTA, VEICULO
+    )
+
+    assert len(payload_carga["entrega"]) == 1
+    assert len(entregas_servico) == 1
+    assert payload_carga["entrega"][0]["pedido_erp"] == "612442_22099141"
+    assert payload_carga["cargas"][0]["entregas_carga"][0]["seq_entrega"] == "1"
+    assert any("Pedido (orçamento)" in a for a in avisos)
+
+
+def test_montar_payload_carga_agrupa_itens_do_mesmo_pedido_numa_so_entrega():
+    item_mesmo_pedido = {**ITEM, "IDSUBPRODUTO": 999, "VALTOTLIQUIDO": 10.0, "PESOBRUTO": 1.0}
+    payload_carga, entregas_servico, _ = service.montar_payload_carga(
+        DETALHE, [ITEM, item_mesmo_pedido], {26623: CLIENTE}, MOTORISTA, VEICULO
+    )
+
+    assert len(payload_carga["entrega"]) == 1
+    assert len(entregas_servico) == 1
+    assert len(entregas_servico[0]["itens"]) == 2
+    assert entregas_servico[0]["valor"] == "740.01"
+    assert entregas_servico[0]["peso"] == "1.500"
+
+
+def test_montar_payload_carga_calcula_cubagem_real_a_partir_das_dimensoes():
+    """cubagem = LARGURA × ALTURA × COMPRIMENTO (cm, catálogo) × QTDPRODUTO,
+    somada por pedido e convertida de cm³ pra m³."""
+    item_com_dimensoes = {
+        **ITEM,
+        "LARGURA": 40.0,
+        "ALTURA": 60.0,
+        "COMPRIMENTO": 12.0,
+        "QTDPRODUTO": 2.0,
+    }
+    payload_carga, _, _ = service.montar_payload_carga(
+        DETALHE, [item_com_dimensoes], {26623: CLIENTE}, MOTORISTA, VEICULO
+    )
+
+    # 40 * 60 * 12 * 2 = 57600 cm3 = 0.0576 m3
+    assert payload_carga["entrega"][0]["cubagem"] == "0.058"
+
+
+def test_montar_payload_carga_avisa_sobre_motorista_e_veiculo_ausentes():
+    payload_carga, _, avisos = service.montar_payload_carga(DETALHE, [ITEM], {26623: CLIENTE}, None, None)
+
+    assert any("motorista" in a for a in avisos)
+    assert any("veículo" in a for a in avisos)
+    assert "motorista" not in payload_carga
+    assert "veiculo" not in payload_carga
+
+
+def test_montar_payload_carga_avisa_sobre_cliente_nao_encontrado():
+    _, _, avisos = service.montar_payload_carga(DETALHE, [ITEM], {26623: None}, MOTORISTA, VEICULO)
+
+    assert any("não encontrado no CISS" in a for a in avisos)
+
+
+def test_montar_payload_carga_dt_saida_e_sempre_amanha_as_7_ignorando_o_ciss():
+    """D3 da spec: dt_saida nunca vem do CISS — regra fixa, mesmo quando
+    DTHORASAIDA está preenchido com outra coisa."""
+    detalhe_com_dthorasaida = {**DETALHE, "DTHORASAIDA": "2019-01-01 00:00:00"}
+    payload_carga, _, _ = service.montar_payload_carga(
+        detalhe_com_dthorasaida, [ITEM], {26623: CLIENTE}, MOTORISTA, VEICULO
+    )
+
+    dt_saida = payload_carga["cargas"][0]["dt_saida"]
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2} 07:00:00", dt_saida)
+    amanha = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+    assert dt_saida.startswith(amanha)
+
+
+# --- fila de envio --------------------------------------------------------
+
+
+def test_resultado_indica_sucesso_com_success_preenchido():
+    assert service._resultado_indica_sucesso({"success": "123", "errors": []}) == (True, None)
+
+
+def test_resultado_indica_sucesso_falha_com_mensagem_msg():
+    """Confirmado em produção: o Fusion rejeita a carga inteira com `msg`,
+    formato diferente de `{success, errors}`."""
+    sucesso, motivo = service._resultado_indica_sucesso({"msg": "codmotorista () nao encontrado"})
+    assert sucesso is False
+    assert "nao encontrado" in motivo
+
+
+def test_resultado_indica_sucesso_falha_com_errors_preenchido():
+    sucesso, motivo = service._resultado_indica_sucesso({"success": "", "errors": ["item inválido"]})
+    assert sucesso is False
+    assert "item inválido" in motivo
+
+
+def test_resultado_indica_sucesso_formato_inesperado():
+    sucesso, _ = service._resultado_indica_sucesso({"nada_reconhecivel": True})
+    assert sucesso is False
+
+
+def test_resultado_indica_sucesso_string_crua_e_tratada_como_falha():
+    """saveCarga com array_dados malformado devolve uma string crua, nem
+    chega a ser JSON — confirmado em produção (spec §7.1, formato 6)."""
+    sucesso, motivo = service._resultado_indica_sucesso(
+        "O Array de Dados do saveCarga tem que ser um array"
+    )
+    assert sucesso is False
+    assert "Array de Dados" in motivo
+
+
+def test_resultado_indica_sucesso_com_success_como_lista_e_sucesso():
+    """saveEntregaServico real devolve success como array, não string
+    (spec §7.1, formato 4)."""
+    assert service._resultado_indica_sucesso({"success": ["TESTE_CLAUDE_001"], "errors": []}) == (
+        True,
+        None,
+    )
+
+
+def test_resultado_indica_sucesso_com_success_lista_vazia_e_falha():
+    sucesso, _ = service._resultado_indica_sucesso({"success": [], "errors": []})
+    assert sucesso is False
+
+
+def test_resultado_indica_sucesso_com_erro_detalhes_e_falha():
+    """saveEntregaServico rejeitando por validação de praça — formato 3 da
+    spec §7.1, sem msg nem errors preenchidos."""
+    sucesso, motivo = service._resultado_indica_sucesso(
+        {"erro_detalhes": [{"pedido": "22094297_22099141", "descricao": "Praca nao cadastrada"}], "success": []}
+    )
+    assert sucesso is False
+    assert "Praca nao cadastrada" in motivo
+
+
+def test_resultado_indica_sucesso_com_success_string_qtderros_virgula_id():
+    """saveCarga real de sucesso: success é "<qtd_erros>,<id_interno>",
+    uma string só (spec §7.1, formato 5)."""
+    assert service._resultado_indica_sucesso({"success": "0,809283", "errors": []}) == (True, None)
+
+
+def test_resultado_indica_sucesso_com_success_bool_false_e_falha():
+    """atualizaCarga real: success como booleano (spec §7.1, formato 7)."""
+    sucesso, _ = service._resultado_indica_sucesso({"success": False, "errors": ["erro"]})
+    assert sucesso is False
+
+
+class FusionSaveCargaFalso:
+    def __init__(self, resultado=None, resultado_entrega_servico=None, resultado_clientes=None, erro=None):
+        self._resultado = resultado if resultado is not None else {"success": "1", "errors": []}
+        self._resultado_entrega_servico = (
+            resultado_entrega_servico
+            if resultado_entrega_servico is not None
+            else {"success": ["ok"], "errors": []}
+        )
+        self._resultado_clientes = (
+            resultado_clientes if resultado_clientes is not None else {"success": ["ok"], "errors": []}
+        )
+        self._erro = erro
+        self.enviado = None
+        self.enviado_entrega_servico = None
+        self.enviado_clientes = None
+
+    def save_carga(self, cargas):
+        if self._erro is not None:
+            raise self._erro
+        self.enviado = cargas
+        return self._resultado
+
+    def save_entrega_servico(self, entregas):
+        if self._erro is not None:
+            raise self._erro
+        self.enviado_entrega_servico = entregas
+        return self._resultado_entrega_servico
+
+    def send_clientes(self, clientes):
+        if self._erro is not None:
+            raise self._erro
+        self.enviado_clientes = clientes
+        return self._resultado_clientes
+
+
+def test_processar_envio_com_aviso_nao_chama_o_fusion(conn):
+    fusion = FusionSaveCargaFalso()
+
+    saida = service.processar_envio(conn, fusion, 3, 22099141, {"cargas": [{}]}, [], ["sem motorista"])
+
+    assert saida["status"] == "pendente"
+    assert fusion.enviado is None
+    assert service.listar_fila(conn)[0]["tentativas"] == 1
+
+
+def test_processar_envio_sem_fusion_configurado_enfileira(conn):
+    saida = service.processar_envio(conn, None, 3, 22099141, {"cargas": [{}]}, [], [])
+
+    assert saida["status"] == "pendente"
+    assert "não configurado" in saida["motivo"]
+
+
+def test_processar_envio_fusion_indisponivel_enfileira(conn):
+    fusion = FusionSaveCargaFalso(erro=FusionUnavailable())
+
+    saida = service.processar_envio(conn, fusion, 3, 22099141, {"cargas": [{}]}, [{"pedido_erp": "x"}], [])
+
+    assert saida["status"] == "pendente"
+    assert "indisponível" in saida["motivo"].lower()
+
+
+def test_processar_envio_fusion_rejeita_enfileira_com_o_motivo(conn):
+    fusion = FusionSaveCargaFalso(resultado={"msg": "codmotorista () nao encontrado"})
+
+    saida = service.processar_envio(conn, fusion, 3, 22099141, {"cargas": [{}]}, [], [])
+
+    assert saida["status"] == "pendente"
+    assert "nao encontrado" in saida["motivo"]
+
+
+def test_processar_envio_entrega_servico_rejeitada_nao_chama_save_carga(conn):
+    """D10: se saveEntregaServico falhar, saveCarga nem é tentado."""
+    fusion = FusionSaveCargaFalso(
+        resultado_entrega_servico={"erro_detalhes": [{"pedido": "x", "descricao": "Praca nao cadastrada"}], "success": []}
+    )
+
+    saida = service.processar_envio(
+        conn, fusion, 3, 22099141, {"cargas": [{}]}, [{"pedido_erp": "x"}], []
+    )
+
+    assert saida["status"] == "pendente"
+    assert "Praca nao cadastrada" in saida["motivo"]
+    assert fusion.enviado is None
+
+
+def test_processar_envio_feliz_marca_enviada(conn):
+    fusion = FusionSaveCargaFalso(resultado={"success": "123", "errors": []})
+
+    payload_carga = {"cargas": [{"codigo_erp": "3_22099141"}]}
+    payload_entregas_servico = [{"pedido_erp": "22094297_22099141"}]
+    saida = service.processar_envio(conn, fusion, 3, 22099141, payload_carga, payload_entregas_servico, [])
+
+    assert saida["status"] == "enviada"
+    assert fusion.enviado == [payload_carga]
+    assert fusion.enviado_entrega_servico == payload_entregas_servico
+    assert service.listar_fila(conn) == []
+
+
+def test_processar_envio_feliz_depois_de_uma_falha_marca_a_fila_como_enviada(conn):
+    service.processar_envio(conn, None, 3, 22099141, {"cargas": [{}]}, [], [])
+    assert service.listar_fila(conn)[0]["status"] == "PENDENTE"
+
+    fusion = FusionSaveCargaFalso(resultado={"success": "123", "errors": []})
+    service.processar_envio(conn, fusion, 3, 22099141, {"cargas": [{}]}, [], [])
+
+    assert service.listar_fila(conn) == []
+    assert service.listar_fila(conn, apenas_pendentes=False)[0]["status"] == "ENVIADA"
+
+
+def test_processar_envio_feliz_de_primeira_tambem_fica_rastreavel(conn):
+    """Um envio que dá certo sem nunca ter passado pela fila antes também
+    precisa virar registro — é a base de buscar_item_fila/forcar."""
+    fusion = FusionSaveCargaFalso(resultado={"success": "123", "errors": []})
+
+    service.processar_envio(conn, fusion, 3, 22099141, {"cargas": [{}]}, [], [])
+
+    item = service.buscar_item_fila(conn, 3, 22099141)
+    assert item["status"] == "ENVIADA"
+    assert item["enviado_em"] is not None
+
+
+def test_processar_envio_carga_ja_enviada_nao_chama_o_fusion_de_novo(conn):
+    primeira = FusionSaveCargaFalso(resultado={"success": "123", "errors": []})
+    service.processar_envio(conn, primeira, 3, 22099141, {"cargas": [{}]}, [], [])
+
+    segunda = FusionSaveCargaFalso(resultado={"success": "123", "errors": []})
+    saida = service.processar_envio(conn, segunda, 3, 22099141, {"cargas": [{}]}, [], [])
+
+    assert saida["status"] == "ja_enviada"
+    assert saida["fila"]["status"] == "ENVIADA"
+    assert segunda.enviado is None
+    assert segunda.enviado_entrega_servico is None
+
+
+def test_processar_envio_carga_ja_enviada_com_forcar_chama_o_fusion(conn):
+    primeira = FusionSaveCargaFalso(resultado={"success": "123", "errors": []})
+    service.processar_envio(conn, primeira, 3, 22099141, {"cargas": [{}]}, [], [])
+
+    segunda = FusionSaveCargaFalso(resultado={"success": "456", "errors": []})
+    payload_carga = {"cargas": [{"codigo_erp": "3_22099141"}]}
+    saida = service.processar_envio(conn, segunda, 3, 22099141, payload_carga, [], [], forcar=True)
+
+    assert saida["status"] == "enviada"
+    assert segunda.enviado == [payload_carga]
+
+
+def test_cargas_ja_enviadas_inclui_enviada_de_verdade_e_marcada_manualmente(conn):
+    service.marcar_integrada_manualmente(conn, 1, 100)
+    fusion = FusionSaveCargaFalso(resultado={"success": "123", "errors": []})
+    service.processar_envio(conn, fusion, 2, 200, {"cargas": [{}]}, [], [])
+    service._registrar_falha_na_fila(conn, 3, 300, "sem motorista", [])
+
+    assert service.cargas_ja_enviadas(conn) == {(1, 100), (2, 200)}
+
+
+def test_marcar_integrada_manualmente_nao_chama_o_fusion(conn):
+    item = service.marcar_integrada_manualmente(conn, 3, 22099141)
+
+    assert item["status"] == "ENVIADA"
+    assert item["integrada_manualmente"] is True
+    assert item["enviado_em"] is not None
+
+
+def test_processar_envio_de_carga_marcada_manualmente_recusa_sem_forcar(conn):
+    service.marcar_integrada_manualmente(conn, 3, 22099141)
+
+    fusion = FusionSaveCargaFalso(resultado={"success": "123", "errors": []})
+    saida = service.processar_envio(conn, fusion, 3, 22099141, {"cargas": [{}]}, [], [])
+
+    assert saida["status"] == "ja_enviada"
+    assert saida["fila"]["integrada_manualmente"] is True
+    assert fusion.enviado is None
+
+
+def test_processar_envio_real_depois_de_marcada_manualmente_desliga_a_flag(conn):
+    """Um envio de verdade (forçado) sobrescreve a marcação manual — a
+    carga passa a refletir que de fato foi enviada pelo Fusion desta vez."""
+    service.marcar_integrada_manualmente(conn, 3, 22099141)
+
+    fusion = FusionSaveCargaFalso(resultado={"success": "123", "errors": []})
+    saida = service.processar_envio(conn, fusion, 3, 22099141, {"cargas": [{}]}, [], [], forcar=True)
+
+    assert saida["status"] == "enviada"
+    assert saida["fila"]["integrada_manualmente"] is False
+
+
+def test_registrar_falha_na_fila_incrementa_tentativas(conn):
+    service._registrar_falha_na_fila(conn, 3, 22099141, "erro 1", [])
+    fila = service._registrar_falha_na_fila(conn, 3, 22099141, "erro 2", [])
+
+    assert fila["tentativas"] == 2
+    assert fila["motivo"] == "erro 2"
+
+
+def test_remover_da_fila(conn):
+    service._registrar_falha_na_fila(conn, 3, 22099141, "erro", [])
+    id_ = service.listar_fila(conn)[0]["id"]
+
+    assert service.remover_da_fila(conn, id_) is True
+    assert service.listar_fila(conn) == []
+
+
+def test_remover_da_fila_inexistente(conn):
+    assert service.remover_da_fila(conn, 999) is False
+
+
+# --- escolha manual de motorista/veículo/entregas --------------------------
+
+
+def test_buscar_veiculo_por_id(conn):
+    linha = service.salvar_veiculo(conn, {"placa": "KGJ-6098", "codigo_erp": "7"})
+
+    assert service.buscar_veiculo_por_id(conn, linha["id"]) == linha
+    assert service.buscar_veiculo_por_id(conn, 999) is None
+
+
+def test_filtrar_itens_selecionados_sem_selecao_devolve_todos():
+    itens = [{"NUMSEQUENCIA": 1}, {"NUMSEQUENCIA": 2}]
+
+    assert service.filtrar_itens_selecionados(itens, None) == itens
+
+
+def test_filtrar_itens_selecionados_restringe_pela_sequencia():
+    itens = [{"NUMSEQUENCIA": 1}, {"NUMSEQUENCIA": 2}, {"NUMSEQUENCIA": 3}]
+
+    assert service.filtrar_itens_selecionados(itens, {1, 3}) == [
+        {"NUMSEQUENCIA": 1},
+        {"NUMSEQUENCIA": 3},
+    ]
+
+
+def test_filtrar_itens_selecionados_vazio_devolve_lista_vazia():
+    """Selecionar nada é diferente de não selecionar nada — a pessoa
+    desmarcou tudo de propósito."""
+    itens = [{"NUMSEQUENCIA": 1}]
+
+    assert service.filtrar_itens_selecionados(itens, set()) == []
+
+
+def test_montar_payload_carga_avisa_quando_nao_ha_itens():
+    payload, entregas_servico, avisos = service.montar_payload_carga(DETALHE, [], {}, MOTORISTA, VEICULO)
+
+    assert "Nenhuma entrega selecionada" in " ".join(avisos)
+    assert payload["entrega"] == []
+    assert payload["cargas"][0]["entregas_carga"] == []
+    assert entregas_servico == []
+
+
+# --- Pré-carga: payload e codigo_erp ---------------------------------------
+# addendum à spec 2026-10-14-cargas-fusion-design.md: a pré-carga
+# (DBA.PRE_CARGA) é enviada ao Fusion como se já fosse uma carga formada,
+# mas sem sugestão automática de motorista/veículo e com um namespace de
+# codigo_erp próprio (nunca colide com o de uma carga real).
+
+DETALHE_PRE_CARGA = {
+    "IDPRECARGA": 796109,
+    "IDEMPRESA": 2,
+    "DESCRPRECARGA": "RECIFE CENTRO",
+}
+
+ITEM_PRE_CARGA = {
+    "IDPLANILHADOCORI": 22118405,
+    "IDORCAMENTO": 614596,
+    "IDSUBPRODUTO": 9397,
+    "IDCLIFOR": 26623,
+    "IDCLIFORENTREGA": 26623,
+    "VALTOTLIQUIDO": 510.0,
+    "PESOBRUTO": 0.0,
+    "DESCRCOMPRODUTO": "CIMENTO POTY CPII F 32 50KG",
+}
+
+
+def test_codigo_pre_carga_nunca_colide_com_codigo_carga():
+    assert service.codigo_pre_carga(2, 796109) == "PC_2_796109"
+    assert service.codigo_pre_carga(2, 796109) != service.codigo_carga(2, 796109)
+
+
+def test_codigo_pedido_generico():
+    assert service.codigo_pedido_generico(614596, "PC796109") == "614596_PC796109"
+
+
+def test_montar_payload_pre_carga_usa_o_namespace_proprio():
+    payload_carga, entregas_servico, avisos = service.montar_payload_pre_carga(
+        DETALHE_PRE_CARGA, [ITEM_PRE_CARGA], {26623: CLIENTE}, MOTORISTA, VEICULO
+    )
+
+    assert avisos == []
+    assert payload_carga["cargas"][0]["codigo_erp"] == "PC_2_796109"
+    assert payload_carga["cargas"][0]["codmotorista"] == "M-1"
+    assert payload_carga["cargas"][0]["codveiculo"] == "V-1"
+    # PRE_CARGA não tem UF/cidade — fato do schema, não lacuna.
+    assert payload_carga["cargas"][0]["destino"] == ""
+    assert payload_carga["cargas"][0]["obs"] == "RECIFE CENTRO"
+    assert payload_carga["entrega"][0]["pedido_erp"] == "614596_PC796109"
+    assert entregas_servico[0]["pedido_erp"] == "614596_PC796109"
+    assert entregas_servico[0]["valor"] == "510.0"
+
+
+def test_montar_payload_pre_carga_sem_nf_fica_vazia_nao_errada():
+    """Sem carga formada, não há NF real ainda — nf/serie ficam vazios em
+    vez de repetir o erro do D11 original (ler a pré-nota como NF)."""
+    _, entregas_servico, _ = service.montar_payload_pre_carga(
+        DETALHE_PRE_CARGA, [ITEM_PRE_CARGA], {26623: CLIENTE}, MOTORISTA, VEICULO
+    )
+
+    assert entregas_servico[0]["nf"] == ""
+    assert entregas_servico[0]["serie"] == ""
+
+
+def test_montar_payload_pre_carga_avisa_sobre_motorista_e_veiculo_ausentes():
+    """Sem sugestão automática (o CISS nunca preenche motorista/veículo
+    numa pré-carga) — a ausência vira o mesmo aviso bloqueante de uma
+    carga real sem cadastro correspondente."""
+    payload_carga, _, avisos = service.montar_payload_pre_carga(
+        DETALHE_PRE_CARGA, [ITEM_PRE_CARGA], {26623: CLIENTE}, None, None
+    )
+
+    assert any("motorista" in a for a in avisos)
+    assert any("veículo" in a for a in avisos)
+    assert "motorista" not in payload_carga
+    assert "veiculo" not in payload_carga
+
+
+# --- montar_payload_carga: pedidos já enviados como pré-carga --------------
+
+
+def test_montar_payload_carga_pula_pedido_ja_coberto_por_pre_carga():
+    payload_carga, entregas_servico, avisos = service.montar_payload_carga(
+        DETALHE,
+        [ITEM],
+        {26623: CLIENTE},
+        MOTORISTA,
+        VEICULO,
+        pedidos_excluidos={ITEM["IDPLANILHADOCORI"]},
+    )
+
+    assert payload_carga["entrega"] == []
+    assert payload_carga["cargas"][0]["entregas_carga"] == []
+    assert entregas_servico == []
+    assert any("já enviado ao Fusion como pré-carga" in a for a in avisos)
+
+
+def test_montar_payload_carga_sem_exclusao_envia_tudo_normalmente():
+    payload_carga, entregas_servico, avisos = service.montar_payload_carga(
+        DETALHE, [ITEM], {26623: CLIENTE}, MOTORISTA, VEICULO, pedidos_excluidos=None
+    )
+
+    assert len(payload_carga["entrega"]) == 1
+    assert len(entregas_servico) == 1
+    assert not any("pré-carga" in a for a in avisos)
+
+
+# --- pedidos_cobertos_por_pre_carga -----------------------------------------
+
+
+def test_pedidos_cobertos_por_pre_carga_sem_origem_devolve_vazio(conn):
+    assert service.pedidos_cobertos_por_pre_carga(conn, {}) == set()
+
+
+def test_pedidos_cobertos_por_pre_carga_so_conta_pre_carga_enviada(conn):
+    service._registrar_falha_na_fila_pre_carga(conn, 2, 796109, "PC_2_796109", None, None, None, "sem motorista", [])
+    service._marcar_enviada_na_fila_pre_carga(conn, 2, 796167, "PC_2_796167", None, None, None)
+
+    origem_por_pedido = {22118405: {796109}, 22134633: {796167}, 22134815: {999999}}
+
+    assert service.pedidos_cobertos_por_pre_carga(conn, origem_por_pedido) == {22134633}
+
+
+# --- fila de pré-carga -------------------------------------------------------
+
+
+def test_processar_envio_pre_carga_com_aviso_nao_chama_o_fusion(conn):
+    fusion = FusionSaveCargaFalso()
+    veiculo_id = service.salvar_veiculo(conn, {"placa": "KGJ-6098", "codigo_erp": "V-1"})["id"]
+
+    saida = service.processar_envio_pre_carga(
+        conn, fusion, 2, 796109, "PC_2_796109", "M-1", "Fulano", veiculo_id, {"cargas": [{}]}, [], ["sem motorista"]
+    )
+
+    assert saida["status"] == "pendente"
+    assert fusion.enviado is None
+    assert service.listar_fila_pre_cargas(conn)[0]["tentativas"] == 1
+    assert service.listar_fila_pre_cargas(conn)[0]["motorista_codigo_erp"] == "M-1"
+    assert service.listar_fila_pre_cargas(conn)[0]["motorista_nome"] == "Fulano"
+    assert service.listar_fila_pre_cargas(conn)[0]["veiculo_id"] == veiculo_id
+
+
+def test_processar_envio_pre_carga_sem_fusion_configurado_enfileira(conn):
+    saida = service.processar_envio_pre_carga(
+        conn, None, 2, 796109, "PC_2_796109", None, None, None, {"cargas": [{}]}, [], []
+    )
+
+    assert saida["status"] == "pendente"
+    assert "não configurado" in saida["motivo"]
+
+
+def test_processar_envio_pre_carga_feliz_marca_enviada(conn):
+    fusion = FusionSaveCargaFalso(resultado={"success": "123", "errors": []})
+
+    saida = service.processar_envio_pre_carga(
+        conn, fusion, 2, 796109, "PC_2_796109", None, None, None,
+        {"cargas": [{"codigo_erp": "PC_2_796109"}]}, [], [],
+    )
+
+    assert saida["status"] == "enviada"
+    assert service.listar_fila_pre_cargas(conn) == []
+    item = service.buscar_item_fila_pre_carga(conn, 2, 796109)
+    assert item["status"] == "ENVIADA"
+    assert item["codigo_erp"] == "PC_2_796109"
+
+
+def test_processar_envio_pre_carga_ja_enviada_nao_chama_o_fusion_de_novo(conn):
+    primeira = FusionSaveCargaFalso(resultado={"success": "123", "errors": []})
+    service.processar_envio_pre_carga(
+        conn, primeira, 2, 796109, "PC_2_796109", None, None, None, {"cargas": [{}]}, [], []
+    )
+
+    segunda = FusionSaveCargaFalso(resultado={"success": "123", "errors": []})
+    saida = service.processar_envio_pre_carga(
+        conn, segunda, 2, 796109, "PC_2_796109", None, None, None, {"cargas": [{}]}, [], []
+    )
+
+    assert saida["status"] == "ja_enviada"
+    assert segunda.enviado is None
+
+
+def test_processar_envio_pre_carga_ja_enviada_com_forcar_chama_o_fusion(conn):
+    primeira = FusionSaveCargaFalso(resultado={"success": "123", "errors": []})
+    service.processar_envio_pre_carga(
+        conn, primeira, 2, 796109, "PC_2_796109", None, None, None, {"cargas": [{}]}, [], []
+    )
+
+    segunda = FusionSaveCargaFalso(resultado={"success": "456", "errors": []})
+    payload_carga = {"cargas": [{"codigo_erp": "PC_2_796109"}]}
+    saida = service.processar_envio_pre_carga(
+        conn, segunda, 2, 796109, "PC_2_796109", None, None, None, payload_carga, [], [], forcar=True
+    )
+
+    assert saida["status"] == "enviada"
+    assert segunda.enviado == [payload_carga]
+
+
+def test_pre_cargas_ja_enviadas(conn):
+    service.processar_envio_pre_carga(
+        conn,
+        FusionSaveCargaFalso(resultado={"success": "1", "errors": []}),
+        2,
+        796109,
+        "PC_2_796109",
+        None,
+        None,
+        None,
+        {"cargas": [{}]},
+        [],
+        [],
+    )
+    service._registrar_falha_na_fila_pre_carga(conn, 2, 796167, "PC_2_796167", None, None, None, "sem motorista", [])
+
+    assert service.pre_cargas_ja_enviadas(conn) == {(2, 796109)}
+
+
+def test_remover_da_fila_pre_carga(conn):
+    service._registrar_falha_na_fila_pre_carga(conn, 2, 796109, "PC_2_796109", None, None, None, "erro", [])
+    id_ = service.listar_fila_pre_cargas(conn)[0]["id"]
+
+    assert service.remover_da_fila_pre_carga(conn, id_) is True
+    assert service.listar_fila_pre_cargas(conn) == []
+
+
+def test_remover_da_fila_pre_carga_inexistente(conn):
+    assert service.remover_da_fila_pre_carga(conn, 999) is False
+
+
+# --- sincronização de cliente via sendClientes ------------------------------
+# achado em produção, 2026-10-20: o cliente{} embutido no stub de
+# entrega[]/saveEntregaServico não cria o cadastro no Fusion, só referencia
+# um já existente — sem sendClientes antes, "Cliente ... nao foi localizado".
+
+
+def test_cliente_para_sendclientes_monta_o_shape_da_doc():
+    payload = service._cliente_para_sendclientes(CLIENTE, 3)
+
+    assert payload["campo_alt"] == "NEW_59"
+    assert payload["seq_id"] == "26623"
+    assert payload["codigo_cliente"] == "26623"
+    assert payload["filial_padrao"] == "3"
+    assert payload["descr_cliente"] == "FULANO"
+    assert payload["razao_cliente"] == "FULANO"
+    assert payload["cnpj_cpf_cliente"] == "12345678900"
+    assert payload["cliente_cod_rota_erp"] == "1"
+    assert payload["cidade_cliente"] == "RECIFE"
+    assert payload["uf_cliente"] == "PE"
+
+
+def test_clientes_ja_sincronizados_vazio_sem_consulta(conn):
+    assert service.clientes_ja_sincronizados(conn, []) == set()
+
+
+def test_clientes_ja_sincronizados_so_os_marcados(conn):
+    service._marcar_clientes_sincronizados(conn, [26623])
+
+    assert service.clientes_ja_sincronizados(conn, [26623, 999]) == {26623}
+
+
+def test_sincronizar_clientes_pendentes_sem_cliente_nao_chama_o_fusion(conn):
+    fusion = FusionSaveCargaFalso()
+
+    erro = service._sincronizar_clientes_pendentes(conn, fusion, {}, 3)
+
+    assert erro is None
+    assert fusion.enviado_clientes is None
+
+
+def test_sincronizar_clientes_pendentes_envia_so_os_novos(conn):
+    service._marcar_clientes_sincronizados(conn, [26623])
+    fusion = FusionSaveCargaFalso()
+
+    erro = service._sincronizar_clientes_pendentes(
+        conn, fusion, {26623: CLIENTE, 99999: {**CLIENTE, "CODIGO_CLIENTE": 99999}}, 3
+    )
+
+    assert erro is None
+    assert len(fusion.enviado_clientes) == 1
+    assert fusion.enviado_clientes[0]["codigo_cliente"] == "99999"
+    assert service.clientes_ja_sincronizados(conn, [26623, 99999]) == {26623, 99999}
+
+
+def test_sincronizar_clientes_pendentes_ignora_cliente_none():
+    """Cliente não encontrado no CISS (None) já vira aviso bloqueante em
+    montar_payload_carga — não faz sentido tentar sincronizar algo que não
+    existe."""
+    fusion = FusionSaveCargaFalso()
+
+    erro = service._sincronizar_clientes_pendentes(None, fusion, {26623: None}, 3)
+
+    assert erro is None
+    assert fusion.enviado_clientes is None
+
+
+def test_sincronizar_clientes_pendentes_propaga_indisponibilidade(conn):
+    fusion = FusionSaveCargaFalso(erro=FusionUnavailable())
+
+    erro = service._sincronizar_clientes_pendentes(conn, fusion, {26623: CLIENTE}, 3)
+
+    assert erro is not None
+    assert "indisponível" in erro.lower()
+    assert service.clientes_ja_sincronizados(conn, [26623]) == set()
+
+
+def test_sincronizar_clientes_pendentes_rejeitado_nao_marca_sincronizado(conn):
+    fusion = FusionSaveCargaFalso(resultado_clientes={"msg": "cliente invalido"})
+
+    erro = service._sincronizar_clientes_pendentes(conn, fusion, {26623: CLIENTE}, 3)
+
+    assert erro == "cliente invalido"
+    assert service.clientes_ja_sincronizados(conn, [26623]) == set()
+
+
+def test_processar_envio_sincroniza_cliente_antes_do_entrega_servico(conn):
+    fusion = FusionSaveCargaFalso(resultado={"success": "1", "errors": []})
+
+    service.processar_envio(
+        conn, fusion, 3, 22099141, {"cargas": [{}]}, [{"pedido_erp": "x"}], [],
+        clientes_por_idclifor={26623: CLIENTE},
+    )
+
+    assert fusion.enviado_clientes[0]["codigo_cliente"] == "26623"
+    assert service.clientes_ja_sincronizados(conn, [26623]) == {26623}
+
+
+def test_processar_envio_nao_resincroniza_cliente_ja_enviado(conn):
+    service._marcar_clientes_sincronizados(conn, [26623])
+    fusion = FusionSaveCargaFalso(resultado={"success": "1", "errors": []})
+
+    service.processar_envio(
+        conn, fusion, 3, 22099141, {"cargas": [{}]}, [{"pedido_erp": "x"}], [],
+        clientes_por_idclifor={26623: CLIENTE},
+    )
+
+    assert fusion.enviado_clientes is None
+
+
+def test_processar_envio_falha_ao_sincronizar_cliente_nao_chama_entrega_servico(conn):
+    fusion = FusionSaveCargaFalso(resultado_clientes={"msg": "cliente invalido"})
+
+    saida = service.processar_envio(
+        conn, fusion, 3, 22099141, {"cargas": [{}]}, [{"pedido_erp": "x"}], [],
+        clientes_por_idclifor={26623: CLIENTE},
+    )
+
+    assert saida["status"] == "pendente"
+    assert saida["motivo"] == "cliente invalido"
+    assert fusion.enviado_entrega_servico is None
+    assert fusion.enviado is None
+
+
+def test_processar_envio_pre_carga_sincroniza_cliente(conn):
+    fusion = FusionSaveCargaFalso(resultado={"success": "1", "errors": []})
+
+    service.processar_envio_pre_carga(
+        conn, fusion, 2, 796109, "PC_2_796109", None, None, None,
+        {"cargas": [{}]}, [{"pedido_erp": "x"}], [],
+        clientes_por_idclifor={26623: CLIENTE},
+    )
+
+    assert fusion.enviado_clientes[0]["codigo_cliente"] == "26623"
+    assert service.clientes_ja_sincronizados(conn, [26623]) == {26623}
