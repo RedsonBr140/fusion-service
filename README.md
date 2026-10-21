@@ -70,8 +70,11 @@ fica indisponível, mas o resto do serviço sobe normalmente).
 local (`usuarios_locais`) é consultada **antes** de qualquer chamada ao
 CISS (usuário fora dela nunca gera tráfego pro CISS). Autentica contra o
 CISS e devolve uma sessão de ~12h como `Authorization: Bearer <token>` —
-sem cookie, token guardado em memória no frontend (perdido ao recarregar a
-aba, por isso é preciso logar de novo).
+sem cookie, token em `localStorage` no frontend, sobrevive a reload. No
+carregamento, o frontend confere esse token contra `GET /api/me` antes de
+assumir a sessão como válida (expirado ou usuário desativado na allow-list
+cai de volta pro login, sem erro). `POST /api/logout` descarta o token
+guardado.
 
 **Allow-list (`usuarios_locais`)** — mantida manualmente, um grupo
 pequeno:
@@ -158,7 +161,7 @@ cargas_fusion/
   service.py                lógica de negócio: cadastro local, montagem de payload, fila de envio
   routes.py                  rotas HTTP, usa os clients acima
 frontend/
-  src/api.ts                 toda chamada HTTP, token em memória
+  src/api.ts                 toda chamada HTTP, token em localStorage
   src/types.ts                tipos da API
   src/components/ui/          primitivas (button, input, label, card, dialog)
   src/tools/cargas_fusion/    telas e hooks

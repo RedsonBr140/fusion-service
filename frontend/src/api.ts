@@ -1,9 +1,11 @@
 // Única porta de saída deste app — monolito, uma tool só, então não há
 // razão para separar "api genérica" de "api da tool" como meta-natal fazia.
-// Sessão própria (não cookie): token de `Authorization: Bearer`, guardado
-// só em memória — perdido ao recarregar a aba, por isso é preciso logar de
-// novo (sem meta-natal pra trocar silenciosamente desde que Cargas Fusion
-// saiu do Toolkit).
+// Sessão própria (não cookie): token de `Authorization: Bearer`, persistido
+// em localStorage pra sobreviver a reload de aba — a validade de ~12h é do
+// próprio token (auth/tokens.py), não de uma sessão no servidor, então
+// guardar e reusar é seguro. `useFusionServiceAuth` confere contra `/api/me`
+// no carregamento, pra não entrar "logado" com um token expirado ou de
+// usuário desativado na allow-list.
 
 import type {
   AjudanteFusion,
@@ -33,7 +35,19 @@ export class ApiError extends Error {
   }
 }
 
-let token: string | null = null;
+const TOKEN_STORAGE_KEY = "fusion_service_token";
+
+function lerTokenPersistido(): string | null {
+  try {
+    return localStorage.getItem(TOKEN_STORAGE_KEY);
+  } catch {
+    // Storage bloqueado (aba privada, política do navegador) — sessão
+    // volta a durar só a aba, como era antes.
+    return null;
+  }
+}
+
+let token: string | null = lerTokenPersistido();
 
 export function getToken(): string | null {
   return token;
@@ -41,6 +55,12 @@ export function getToken(): string | null {
 
 export function setToken(novoToken: string | null): void {
   token = novoToken;
+  try {
+    if (novoToken) localStorage.setItem(TOKEN_STORAGE_KEY, novoToken);
+    else localStorage.removeItem(TOKEN_STORAGE_KEY);
+  } catch {
+    // Mesmo bloqueio acima — a sessão em memória ainda funciona.
+  }
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -74,6 +94,17 @@ export function login(
     method: "POST",
     body: JSON.stringify({ username, password }),
   });
+}
+
+/** Confere se o token guardado ainda é válido (não expirou, não foi
+ * desativado na allow-list) e devolve quem está logado — usado só no
+ * carregamento da página, pra restaurar a sessão sem pedir login de novo. */
+export function getMe(): Promise<{ user: { ciss_code: string | null; name: string } }> {
+  return request("/api/me");
+}
+
+export function logout(): Promise<void> {
+  return request("/api/logout", { method: "POST" });
 }
 
 // --- Cargas ------------------------------------------------------------

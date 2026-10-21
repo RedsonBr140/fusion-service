@@ -1,3 +1,4 @@
+import { LoaderCircle } from "lucide-react";
 import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -40,15 +41,33 @@ export function CargasFusionPage() {
     <div className="min-h-screen bg-background p-8">
       <Card className="mx-auto max-w-5xl">
         <CardHeader>
-          <CardTitle className="text-2xl tracking-tight">Cargas Fusion</CardTitle>
-          <p className="text-sm text-muted-foreground">
-            Buscar cargas e pré-cargas no CISSPoder e integrá-las ao Fusion.
-            Motorista e veículo vêm direto do Fusion; ajudante vem de um
-            cadastro próprio — não do CISS a cada busca.
-          </p>
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <CardTitle className="text-2xl tracking-tight">Cargas Fusion</CardTitle>
+              <p className="text-sm text-muted-foreground">
+                Buscar cargas e pré-cargas no CISSPoder e integrá-las ao Fusion.
+                Motorista e veículo vêm direto do Fusion; ajudante vem de um
+                cadastro próprio — não do CISS a cada busca.
+              </p>
+            </div>
+            {fusionAuth.status === "ready" && (
+              <div className="flex shrink-0 items-center gap-2">
+                <span className="text-sm text-muted-foreground">{fusionAuth.user.name}</span>
+                <Button type="button" variant="outline" size="sm" onClick={fusionAuth.sair}>
+                  Sair
+                </Button>
+              </div>
+            )}
+          </div>
         </CardHeader>
 
         <CardContent className="flex flex-col gap-6">
+          {fusionAuth.status === "restaurando" && (
+            <p className="flex items-center gap-2 text-sm text-muted-foreground">
+              <LoaderCircle className="animate-spin size-4" /> Restaurando sessão...
+            </p>
+          )}
+
           {fusionAuth.status === "precisa-login" && (
             <FusionServiceLoginForm
               loginDireto={fusionAuth.loginDireto}
