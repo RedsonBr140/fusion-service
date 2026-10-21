@@ -29,9 +29,25 @@ def _tabela_existe(conn: sqlite3.Connection, tabela: str) -> bool:
 
 
 def _migrar(conn: sqlite3.Connection) -> None:
-    """Idempotente: roda em todo boot, só altera o que ainda não existe.
-    Vazio hoje — é onde `ALTER TABLE ... ADD COLUMN` entra quando uma coluna
-    nova chegar depois do release inicial deste serviço."""
+    """Idempotente: roda em todo boot, só altera o que ainda não existe —
+    é onde `ALTER TABLE ... ADD COLUMN` entra quando uma coluna nova chega
+    depois do release inicial deste serviço.
+
+    `veiculo_id` → `veiculo_codigo_erp`/`veiculo_descricao`: a migração do
+    veículo pro portal do Fusion (sem cadastro local) trocou essas colunas
+    em `schema.sql`, mas `CREATE TABLE IF NOT EXISTS` é no-op numa tabela
+    que já existe — um banco criado antes dessa mudança continuava com a
+    coluna velha pra sempre, e todo INSERT/UPDATE que já fala
+    `veiculo_codigo_erp` quebraria com "no such column". `veiculo_id`
+    fica, sem uso — sqlite3 não tem `DROP COLUMN` barato, e não há dado
+    nela que valha migrar (era só uma FK pra uma tabela que não existe
+    mais)."""
+    if _tabela_existe(conn, "cargas_fusion_precarga_fila"):
+        colunas = _colunas(conn, "cargas_fusion_precarga_fila")
+        if "veiculo_codigo_erp" not in colunas:
+            conn.execute("ALTER TABLE cargas_fusion_precarga_fila ADD COLUMN veiculo_codigo_erp TEXT")
+        if "veiculo_descricao" not in colunas:
+            conn.execute("ALTER TABLE cargas_fusion_precarga_fila ADD COLUMN veiculo_descricao TEXT")
 
 
 def init_database(path: str | Path) -> None:

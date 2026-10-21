@@ -441,6 +441,20 @@ ambiguidade real entre os três. `integrations/ciss.py::get_carga_por_pedido`/
 retirada não tenha a integração marcada, porque quem está buscando já
 sabe o documento específico que quer.
 
+## `CREATE TABLE IF NOT EXISTS` não migra coluna renomeada
+
+Achado em produção: a migração do veículo pro portal do Fusion (sem
+cadastro local) trocou `cargas_fusion_precarga_fila.veiculo_id` por
+`veiculo_codigo_erp`/`veiculo_descricao` em `schema.sql`, mas um banco já
+existente (criado antes dessa mudança) nunca ganhava as colunas novas —
+`CREATE TABLE IF NOT EXISTS` é no-op numa tabela que já existe, só
+`_migrar()` altera schema de banco existente. Todo `INSERT`/`UPDATE` de
+`processar_envio_pre_carga` já falava `veiculo_codigo_erp`, então
+quebrava com `"no such column"` nesse banco. `_migrar()` agora adiciona
+as duas colunas quando faltam (`veiculo_id` fica, sem uso — sqlite3 não
+tem `DROP COLUMN` barato, e não há dado nela que valha migrar). Qualquer
+coluna renomeada (não só nova) em `schema.sql` precisa do mesmo cuidado.
+
 ## Pendências de dado conhecidas
 
 - `preco`/`subtotal` dos itens de `saveEntregaServico`: `subtotal` vem de
