@@ -32,6 +32,12 @@ export function MotoristaPickerFusion({ id, sugestao, escolhido, onEscolher }: P
           id={id}
           value={termo}
           onChange={(e) => setTermo(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && termo.trim()) {
+              e.preventDefault();
+              buscar.mutate(termo);
+            }
+          }}
           placeholder="Buscar por nome no Fusion"
           className="max-w-xs"
         />

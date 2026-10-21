@@ -103,6 +103,27 @@ def _decodificar_resparam(texto: str) -> object:
     return valor
 
 
+def _sem_aspas_duplas(valor: object) -> object:
+    """Fusion não tolera aspas duplas dentro de `array_dados` — mesmo
+    corretamente escapadas no JSON (`\\"`), o parser do lado de lá quebra
+    o array inteiro, sem apontar qual campo. Confirmado em produção:
+    descrição de produto `1" TIPO CUNHA` (IDSUBPRODUTO 139919, carga
+    `1_22142248`) bastou para `saveEntregaServico` rejeitar a chamada
+    inteira com `"Error ao no array_dados informado..."` — bisecionado
+    item a item contra produção até achar exatamente esse. Troca por
+    aspa simples em toda string, recursivamente, antes de serializar —
+    mais seguro que corrigir caso a caso em cada call site, já que
+    qualquer campo de texto livre (descrição de produto, nome, endereço)
+    pode trazer uma aspa do CISS."""
+    if isinstance(valor, str):
+        return valor.replace('"', "'")
+    if isinstance(valor, list):
+        return [_sem_aspas_duplas(v) for v in valor]
+    if isinstance(valor, dict):
+        return {chave: _sem_aspas_duplas(v) for chave, v in valor.items()}
+    return valor
+
+
 _CAMPOS_CREDENCIAL = ("login", "senha")
 
 
@@ -172,7 +193,7 @@ class FusionClient:
             {
                 "login": self._config.login,
                 "senha": self._config.senha,
-                "array_dados": json.dumps(array_dados, ensure_ascii=False),
+                "array_dados": json.dumps(_sem_aspas_duplas(array_dados), ensure_ascii=False),
             },
         )
 

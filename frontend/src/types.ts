@@ -58,7 +58,7 @@ export interface ItemCargaFusion {
 
 export interface SelecaoEnvioCargaFusion {
   motoristaCodigoErp?: string | null;
-  veiculoId?: number | null;
+  veiculoCodigoErp?: string | null;
   /** NUMSEQUENCIA das entregas escolhidas; `null`/ausente = todas. */
   itens?: number[] | null;
 }
@@ -70,11 +70,12 @@ export interface PreviewCargaFusion {
   payload_entregas_servico: PayloadCargaFusion[];
   avisos: string[];
   itens: ItemCargaFusion[];
-  /** Motorista sugerido, lido ao vivo do Fusion por IDMOTORISTA
-   * (2026-10-20) — `null` se a carga não tiver um, ou ele não estiver
-   * cadastrado lá. */
+  /** Motorista sugerido, lido ao vivo do Fusion por IDMOTORISTA —
+   * `null` se a carga não tiver um, ou ele não estiver cadastrado lá. */
   sugestao_motorista: MotoristaFusion | null;
-  sugestao_veiculo_id: number | null;
+  /** Veículo sugerido, lido ao vivo do Fusion por PLACATRANSP — mesma
+   * regra do motorista. */
+  sugestao_veiculo: VeiculoFusion | null;
   /** Presente se a carga já teve alguma passagem pela fila (sucesso ou
    * falha). `status: "ENVIADA"` significa que reenviar precisa de
    * `forcar: true` em `enviarCarga`, senão o backend recusa sem chamar o
@@ -138,7 +139,7 @@ export interface ItemPreCargaFusion {
 
 export interface SelecaoEnvioPreCargaFusion {
   motoristaCodigoErp?: string | null;
-  veiculoId?: number | null;
+  veiculoCodigoErp?: string | null;
   itens?: number[] | null;
 }
 
@@ -149,6 +150,8 @@ export interface PreviewPreCargaFusion {
   itens: ItemPreCargaFusion[];
   /** O motorista escolhido, lido ao vivo do Fusion por `motorista_codigo_erp`. */
   motorista: MotoristaFusion | null;
+  /** O veículo escolhido, lido ao vivo do Fusion por `veiculo_codigo_erp`. */
+  veiculo: VeiculoFusion | null;
   item_fila: ItemFilaPreCargaFusion | null;
 }
 
@@ -159,7 +162,8 @@ export interface ItemFilaPreCargaFusion {
   codigo_erp: string;
   motorista_codigo_erp: string | null;
   motorista_nome: string | null;
-  veiculo_id: number | null;
+  veiculo_codigo_erp: string | null;
+  veiculo_descricao: string | null;
   status: "PENDENTE" | "ENVIADA";
   motivo: string | null;
   avisos: string[];
@@ -167,18 +171,18 @@ export interface ItemFilaPreCargaFusion {
   enviado_em: string | null;
 }
 
+/** Lido ao vivo do portal do Fusion (fusion-py), não de cadastro local —
+ * sem `id` nem `ativo`; `codigo_erp` é o identificador. Sem
+ * `peso_max_entregas`/`volume_max_entregas`/`qtd_pallets_veiculo`: a grade
+ * do portal não traz esses campos (nunca teve fonte melhor que placeholder
+ * pra eles, nem no antigo cadastro local). */
 export interface VeiculoFusion {
-  id: number;
-  placa: string;
   codigo_erp: string;
+  placa: string;
   descricao: string | null;
   modelo: string | null;
   ano_modelo: number | null;
   ano_fabricacao: number | null;
-  peso_max_entregas: number | null;
-  volume_max_entregas: number | null;
-  qtd_pallets_veiculo: number | null;
-  ativo: boolean;
 }
 
 /** Lido ao vivo do portal do Fusion (fusion-py), não de cadastro local
@@ -200,17 +204,6 @@ export interface AjudanteFusion {
   codigo_erp: string;
   nome: string;
   ativo: boolean;
-}
-
-export interface CandidatoVeiculoCiss {
-  IDVEICULO: number;
-  DESCRVEICULO: string;
-  PLACA: string;
-  MODELO: string | null;
-  ANOMODELO: string | null;
-  ANOFABRICACAO: string | null;
-  PESOMAXIMO: number;
-  VOLUME: number;
 }
 
 export interface CandidatoPessoaCiss {

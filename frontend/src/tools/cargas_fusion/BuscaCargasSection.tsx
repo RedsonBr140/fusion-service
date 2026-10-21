@@ -23,7 +23,6 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ApiError } from "@/api";
-import { useVeiculos } from "@/tools/cargas_fusion/useCadastroFusion";
 import {
   useBuscarCargas,
   useCargaPreview,
@@ -31,8 +30,21 @@ import {
   useEnviarCarga,
   useMarcarCargaIntegrada,
 } from "@/tools/cargas_fusion/useCargasFusion";
+import {
+  useBuscarPreCargas,
+  useEnviarPreCarga,
+  usePreCargaPreview,
+} from "@/tools/cargas_fusion/usePreCargasFusion";
 import { MotoristaPickerFusion } from "@/tools/cargas_fusion/MotoristaPickerFusion";
-import type { CargaResumo, ItemCargaFusion, MotoristaFusion, VeiculoFusion } from "@/types";
+import { VeiculoPickerFusion } from "@/tools/cargas_fusion/VeiculoPickerFusion";
+import type {
+  CargaResumo,
+  ItemCargaFusion,
+  ItemPreCargaFusion,
+  MotoristaFusion,
+  PreCargaResumo,
+  VeiculoFusion,
+} from "@/types";
 
 function mensagemDeErro(erro: unknown): string | null {
   return erro instanceof ApiError ? erro.message : erro ? "Erro inesperado." : null;
@@ -57,15 +69,81 @@ function formatarNumero(valor: number | null, casasDecimais = 1): string {
   return (valor ?? 0).toLocaleString("pt-BR", { maximumFractionDigits: casasDecimais });
 }
 
+function rotuloVeiculo(v: VeiculoFusion): string {
+  return v.descricao ? `${v.placa} - ${v.descricao}` : v.placa;
+}
+
+type ItemComPedido = ItemCargaFusion | ItemPreCargaFusion;
+
 /** L×A×C (cm) e o volume calculado (L) — PRODUTO_GRADE não guarda volume
  * pronto, só as três dimensões. `null` quando o produto não tem nenhuma
  * cadastrada (comum — é um dado de catálogo, não de toda a base). */
-function formatarDimensoes(item: ItemCargaFusion): string | null {
+function formatarDimensoes(item: ItemComPedido): string | null {
   const { LARGURA: l, ALTURA: a, COMPRIMENTO: c } = item;
   if (!l && !a && !c) return null;
   const volumeLitros = ((l ?? 0) * (a ?? 0) * (c ?? 0)) / 1000;
   return `${formatarNumero(l)}×${formatarNumero(a)}×${formatarNumero(c)} cm · ${formatarNumero(volumeLitros)} L`;
 }
+
+// --- lista unificada: carga + pré-carga, uma tabela só -----------------
+
+interface LinhaCarga {
+  tipo: "carga";
+  idEmpresa: number;
+  idPlanilha: number;
+  codigo: string;
+  detalhe: string;
+  data: string | null;
+  confirmada: boolean;
+}
+
+interface LinhaPreCarga {
+  tipo: "pre-carga";
+  idEmpresa: number;
+  idPrecarga: number;
+  codigo: string;
+  detalhe: string;
+  data: string | null;
+  confirmada: boolean;
+}
+
+type Linha = LinhaCarga | LinhaPreCarga;
+
+function linhaDeCarga(c: CargaResumo): LinhaCarga {
+  return {
+    tipo: "carga",
+    idEmpresa: c.IDEMPRESA,
+    idPlanilha: c.IDPLANILHA,
+    codigo: `${c.IDEMPRESA}_${c.IDPLANILHA}`,
+    detalhe: `${c.NOMETRANSP ?? c.IDMOTORISTA ?? "—"} · ${c.PLACATRANSP ?? "sem placa"}`,
+    data: c.DTALTERACAO,
+    confirmada: c.FLAGCONFIRMADA === "T",
+  };
+}
+
+function linhaDePreCarga(pc: PreCargaResumo): LinhaPreCarga {
+  return {
+    tipo: "pre-carga",
+    idEmpresa: pc.IDEMPRESA,
+    idPrecarga: pc.IDPRECARGA,
+    codigo: `${pc.IDEMPRESA}_${pc.IDPRECARGA}`,
+    detalhe: pc.DESCRPRECARGA || "—",
+    data: pc.DTMOVIMENTO,
+    confirmada: pc.FLAGCONFERIDA === "T",
+  };
+}
+
+function TagPreCarga() {
+  return (
+    <span className="rounded-full border border-info/60 bg-info/10 px-2 py-0.5 text-xs font-normal text-info-text">
+      Pré-carga
+    </span>
+  );
+}
+
+type Selecionada =
+  | { tipo: "carga"; idEmpresa: number; idPlanilha: number }
+  | { tipo: "pre-carga"; idEmpresa: number; idPrecarga: number };
 
 interface Props {
   cargaPreSelecionada: { idEmpresa: number; idPlanilha: number } | null;
@@ -76,21 +154,22 @@ export function BuscaCargasSection({ cargaPreSelecionada }: Props) {
   const [dataFinal, setDataFinal] = useState(agoraMenos(0));
   const [filtroEmpresaId, setFiltroEmpresaId] = useState<number | null>(null);
   const [ocultarEnviadas, setOcultarEnviadas] = useState(true);
-  const [selecionada, setSelecionada] = useState<{ idEmpresa: number; idPlanilha: number } | null>(
-    cargaPreSelecionada
+  const [mostrarPreCargas, setMostrarPreCargas] = useState(true);
+  const [selecionada, setSelecionada] = useState<Selecionada | null>(
+    cargaPreSelecionada ? { tipo: "carga", ...cargaPreSelecionada } : null
   );
 
   // `null` em cada uma destas significa "usar a sugestão automática" (ou,
   // pros itens, "todos") — só vira um valor concreto quando a pessoa mexe.
-  // Motorista guarda o objeto inteiro (lido ao vivo do Fusion), não um id —
-  // não há mais lista local pra resolver um id de volta a um nome.
+  // Motorista e veículo guardam o objeto inteiro (lidos ao vivo do Fusion),
+  // não um id — não há mais lista local pra resolver um id de volta a um nome.
   const [motoristaEscolhido, setMotoristaEscolhido] = useState<MotoristaFusion | null>(null);
-  const [veiculoId, setVeiculoId] = useState<number | null>(null);
+  const [veiculoEscolhido, setVeiculoEscolhido] = useState<VeiculoFusion | null>(null);
   const [itensSelecionados, setItensSelecionados] = useState<Set<number> | null>(null);
   const [confirmarReenvio, setConfirmarReenvio] = useState(false);
-  // Snapshot do que foi enviado com sucesso — a prévia pode mudar (item_fila
-  // atualiza) depois do envio, então o modal mostra o que foi mandado, não
-  // o estado atual da prévia.
+  // Snapshot do que foi enviado com sucesso (só carga — pré-carga não abre
+  // esse diálogo) — a prévia pode mudar (item_fila atualiza) depois do
+  // envio, então o modal mostra o que foi mandado, não o estado atual.
   const [cargaEnviada, setCargaEnviada] = useState<{
     idEmpresa: number;
     idPlanilha: number;
@@ -100,56 +179,88 @@ export function BuscaCargasSection({ cargaPreSelecionada }: Props) {
   } | null>(null);
 
   const busca = useBuscarCargas();
+  const buscaPreCargas = useBuscarPreCargas();
   const empresas = useEmpresasCargasFusion();
-  const veiculos = useVeiculos();
-  const preview = useCargaPreview(selecionada, {
-    motoristaCodigoErp: motoristaEscolhido?.codigo_erp ?? undefined,
-    veiculoId: veiculoId ?? undefined,
-    itens: itensSelecionados ? Array.from(itensSelecionados) : undefined,
-  });
+
+  const previewCarga = useCargaPreview(
+    selecionada?.tipo === "carga"
+      ? { idEmpresa: selecionada.idEmpresa, idPlanilha: selecionada.idPlanilha }
+      : null,
+    {
+      motoristaCodigoErp: motoristaEscolhido?.codigo_erp ?? undefined,
+      veiculoCodigoErp: veiculoEscolhido?.codigo_erp ?? undefined,
+      itens: itensSelecionados ? Array.from(itensSelecionados) : undefined,
+    }
+  );
+  const previewPreCarga = usePreCargaPreview(
+    selecionada?.tipo === "pre-carga"
+      ? { idEmpresa: selecionada.idEmpresa, idPrecarga: selecionada.idPrecarga }
+      : null,
+    {
+      motoristaCodigoErp: motoristaEscolhido?.codigo_erp ?? undefined,
+      veiculoCodigoErp: veiculoEscolhido?.codigo_erp ?? undefined,
+      itens: itensSelecionados ? Array.from(itensSelecionados) : undefined,
+    }
+  );
+
   const enviar = useEnviarCarga();
+  const enviarPreCarga = useEnviarPreCarga();
   const marcarIntegrada = useMarcarCargaIntegrada();
 
-  // Chegou aqui vinda da fila: abre a prévia direto, sem precisar buscar.
+  // Chegou aqui vinda da fila (histórico): abre a prévia direto, sem
+  // precisar buscar. Histórico só lista cargas, nunca pré-carga.
   useEffect(() => {
     if (cargaPreSelecionada) {
-      setSelecionada(cargaPreSelecionada);
+      setSelecionada({ tipo: "carga", ...cargaPreSelecionada });
       setMotoristaEscolhido(null);
-      setVeiculoId(null);
+      setVeiculoEscolhido(null);
       setItensSelecionados(null);
       setConfirmarReenvio(false);
       setCargaEnviada(null);
     }
   }, [cargaPreSelecionada]);
 
-  const cargas = busca.data ?? [];
+  const linhas: Linha[] = [
+    ...(busca.data ?? []).map(linhaDeCarga),
+    ...(mostrarPreCargas ? (buscaPreCargas.data ?? []).map(linhaDePreCarga) : []),
+  ].sort((a, b) => (b.data ?? "").localeCompare(a.data ?? ""));
+
   const erro =
     mensagemDeErro(busca.error) ??
-    mensagemDeErro(preview.error) ??
+    mensagemDeErro(buscaPreCargas.error) ??
+    mensagemDeErro(previewCarga.error) ??
+    mensagemDeErro(previewPreCarga.error) ??
     mensagemDeErro(enviar.error) ??
+    mensagemDeErro(enviarPreCarga.error) ??
     mensagemDeErro(marcarIntegrada.error) ??
-    mensagemDeErro(veiculos.error) ??
     mensagemDeErro(empresas.error);
 
   function buscar() {
     setSelecionada(null);
     enviar.reset();
+    enviarPreCarga.reset();
     marcarIntegrada.reset();
     busca.mutate({ dataInicial, dataFinal, idEmpresa: filtroEmpresaId, ocultarEnviadas });
+    buscaPreCargas.mutate({ dataInicial, dataFinal, idEmpresa: filtroEmpresaId, ocultarEnviadas });
   }
 
-  function selecionar(carga: CargaResumo) {
+  function selecionar(linha: Linha) {
     enviar.reset();
+    enviarPreCarga.reset();
     marcarIntegrada.reset();
     setMotoristaEscolhido(null);
-    setVeiculoId(null);
+    setVeiculoEscolhido(null);
     setItensSelecionados(null);
     setConfirmarReenvio(false);
     setCargaEnviada(null);
-    setSelecionada({ idEmpresa: carga.IDEMPRESA, idPlanilha: carga.IDPLANILHA });
+    setSelecionada(
+      linha.tipo === "carga"
+        ? { tipo: "carga", idEmpresa: linha.idEmpresa, idPlanilha: linha.idPlanilha }
+        : { tipo: "pre-carga", idEmpresa: linha.idEmpresa, idPrecarga: linha.idPrecarga }
+    );
   }
 
-  function alternarPedido(numerosDoPedido: number[], todos: ItemCargaFusion[]) {
+  function alternarPedido(numerosDoPedido: number[], todos: ItemComPedido[]) {
     // Um pedido vai pro Fusion inteiro ou não vai (D10 da spec — o
     // saveEntregaServico leva todo o itens[] do pedido de uma vez): a
     // seleção alterna o pedido como unidade, nunca uma linha isolada dele.
@@ -163,25 +274,22 @@ export function BuscaCargasSection({ cargaPreSelecionada }: Props) {
     setItensSelecionados(novo);
   }
 
-  function enviarCarga(forcar = false) {
-    if (!selecionada) return;
+  function enviarCargaSelecionada(forcar = false) {
+    if (!selecionada || selecionada.tipo !== "carga") return;
     const snapshot = selecionada;
-    const payload = preview.isSuccess ? preview.data.payload : null;
-    const motorista = preview.isSuccess
-      ? motoristaEscolhido ?? preview.data.sugestao_motorista
+    const payload = previewCarga.isSuccess ? previewCarga.data.payload : null;
+    const motorista = previewCarga.isSuccess
+      ? motoristaEscolhido ?? previewCarga.data.sugestao_motorista
       : null;
-    const veiculo = preview.isSuccess
-      ? (veiculos.data ?? []).find(
-          (v) => v.id === (veiculoId ?? preview.data.sugestao_veiculo_id)
-        ) ?? null
-      : null;
+    const veiculo = previewCarga.isSuccess ? veiculoEscolhido ?? previewCarga.data.sugestao_veiculo : null;
 
     enviar.mutate(
       {
-        ...selecionada,
+        idEmpresa: snapshot.idEmpresa,
+        idPlanilha: snapshot.idPlanilha,
         selecao: {
           motoristaCodigoErp: motoristaEscolhido?.codigo_erp ?? undefined,
-          veiculoId: veiculoId ?? undefined,
+          veiculoCodigoErp: veiculoEscolhido?.codigo_erp ?? undefined,
           itens: itensSelecionados ? Array.from(itensSelecionados) : undefined,
         },
         forcar,
@@ -189,16 +297,36 @@ export function BuscaCargasSection({ cargaPreSelecionada }: Props) {
       {
         onSuccess: (resultado) => {
           if (resultado.status === "enviada" && payload) {
-            setCargaEnviada({ ...snapshot, payload, motorista, veiculo });
+            setCargaEnviada({
+              idEmpresa: snapshot.idEmpresa,
+              idPlanilha: snapshot.idPlanilha,
+              payload,
+              motorista,
+              veiculo,
+            });
           }
         },
       }
     );
   }
 
+  function enviarPreCargaSelecionada(forcar = false) {
+    if (!selecionada || selecionada.tipo !== "pre-carga") return;
+    enviarPreCarga.mutate({
+      idEmpresa: selecionada.idEmpresa,
+      idPrecarga: selecionada.idPrecarga,
+      selecao: {
+        motoristaCodigoErp: motoristaEscolhido?.codigo_erp ?? undefined,
+        veiculoCodigoErp: veiculoEscolhido?.codigo_erp ?? undefined,
+        itens: itensSelecionados ? Array.from(itensSelecionados) : undefined,
+      },
+      forcar,
+    });
+  }
+
   function marcarIntegradaManualmente() {
-    if (!selecionada) return;
-    marcarIntegrada.mutate(selecionada);
+    if (!selecionada || selecionada.tipo !== "carga") return;
+    marcarIntegrada.mutate({ idEmpresa: selecionada.idEmpresa, idPlanilha: selecionada.idPlanilha });
   }
 
   return (
@@ -240,25 +368,41 @@ export function BuscaCargasSection({ cargaPreSelecionada }: Props) {
             ))}
           </select>
         </div>
-        <Button type="button" onClick={buscar} disabled={busca.isPending}>
-          {busca.isPending ? <LoaderCircle className="animate-spin" /> : <Search />}
+        <Button type="button" onClick={buscar} disabled={busca.isPending || buscaPreCargas.isPending}>
+          {busca.isPending || buscaPreCargas.isPending ? (
+            <LoaderCircle className="animate-spin" />
+          ) : (
+            <Search />
+          )}
           Buscar
         </Button>
       </div>
 
-      <label className="flex w-fit items-center gap-2 text-sm text-foreground">
-        <input
-          type="checkbox"
-          className="size-4 accent-primary"
-          checked={ocultarEnviadas}
-          onChange={(e) => setOcultarEnviadas(e.target.checked)}
-        />
-        Não mostrar cargas já enviadas
-      </label>
+      <div className="flex flex-wrap gap-4">
+        <label className="flex w-fit items-center gap-2 text-sm text-foreground">
+          <input
+            type="checkbox"
+            className="size-4 accent-primary"
+            checked={ocultarEnviadas}
+            onChange={(e) => setOcultarEnviadas(e.target.checked)}
+          />
+          Não mostrar cargas já enviadas
+        </label>
+        <label className="flex w-fit items-center gap-2 text-sm text-foreground">
+          <input
+            type="checkbox"
+            className="size-4 accent-primary"
+            checked={mostrarPreCargas}
+            onChange={(e) => setMostrarPreCargas(e.target.checked)}
+          />
+          Mostrar pré-cargas
+        </label>
+      </div>
 
       <p className="text-xs text-muted-foreground">
         Cargas de antes de 10/09/2026 06:00 nunca aparecem — até lá, a roteirização era
-        feita pela integração nativa do Fusion, não por esta tool.
+        feita pela integração nativa do Fusion, não por esta tool. Pré-carga ainda não tem
+        motorista/veículo no CISS — escolha os dois antes de enviar.
       </p>
 
       {erro && (
@@ -267,10 +411,12 @@ export function BuscaCargasSection({ cargaPreSelecionada }: Props) {
         </p>
       )}
 
-      {busca.isSuccess && (
+      {(busca.isSuccess || buscaPreCargas.isSuccess) && (
         <div className="overflow-x-auto">
-          {cargas.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Nenhuma carga encontrada no período.</p>
+          {linhas.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              {mostrarPreCargas ? "Nenhuma carga ou pré-carga encontrada no período." : "Nenhuma carga encontrada no período."}
+            </p>
           ) : (
             <table className="w-full min-w-[32rem] text-sm">
               <thead>
@@ -282,32 +428,35 @@ export function BuscaCargasSection({ cargaPreSelecionada }: Props) {
                 </tr>
               </thead>
               <tbody>
-                {cargas.map((carga) => {
+                {linhas.map((linha) => {
                   const marcada =
-                    selecionada?.idEmpresa === carga.IDEMPRESA &&
-                    selecionada?.idPlanilha === carga.IDPLANILHA;
+                    linha.tipo === "carga"
+                      ? selecionada?.tipo === "carga" &&
+                        selecionada.idEmpresa === linha.idEmpresa &&
+                        selecionada.idPlanilha === linha.idPlanilha
+                      : selecionada?.tipo === "pre-carga" &&
+                        selecionada.idEmpresa === linha.idEmpresa &&
+                        selecionada.idPrecarga === linha.idPrecarga;
                   return (
                     <tr
-                      key={`${carga.IDEMPRESA}-${carga.IDPLANILHA}`}
-                      onClick={() => selecionar(carga)}
+                      key={`${linha.tipo}-${linha.codigo}`}
+                      onClick={() => selecionar(linha)}
                       className={
                         "cursor-pointer border-b border-border/50 " +
                         (marcada ? "bg-accent" : "hover:bg-muted/50")
                       }
                     >
                       <td className="py-2 pr-3 tabular-nums whitespace-nowrap">
-                        {carga.IDEMPRESA}_{carga.IDPLANILHA}
+                        <span className="inline-flex items-center gap-2">
+                          {linha.codigo}
+                          {linha.tipo === "pre-carga" && <TagPreCarga />}
+                        </span>
                       </td>
-                      <td className="py-2 pr-3 whitespace-nowrap">
-                        {carga.NOMETRANSP ?? carga.IDMOTORISTA ?? "—"} ·{" "}
-                        {carga.PLACATRANSP ?? "sem placa"}
-                      </td>
+                      <td className="py-2 pr-3 whitespace-nowrap">{linha.detalhe}</td>
                       <td className="py-2 pr-3 whitespace-nowrap text-muted-foreground">
-                        {formatarData(carga.DTALTERACAO)}
+                        {formatarData(linha.data)}
                       </td>
-                      <td className="py-2 pr-3 whitespace-nowrap">
-                        {carga.FLAGCONFIRMADA === "T" ? "Sim" : "Não"}
-                      </td>
+                      <td className="py-2 pr-3 whitespace-nowrap">{linha.confirmada ? "Sim" : "Não"}</td>
                     </tr>
                   );
                 })}
@@ -317,82 +466,83 @@ export function BuscaCargasSection({ cargaPreSelecionada }: Props) {
         </div>
       )}
 
-      {selecionada && (
+      {selecionada?.tipo === "carga" && (
         <div className="flex flex-col gap-3 rounded-md border border-border p-4">
           <p className="text-sm font-medium text-foreground">
             Carga {selecionada.idEmpresa}_{selecionada.idPlanilha}
           </p>
 
-          {preview.isPending && (
+          {previewCarga.isPending && (
             <p className="flex items-center gap-2 text-sm text-muted-foreground">
               <LoaderCircle className="animate-spin size-4" /> Montando prévia...
             </p>
           )}
 
-          {preview.isSuccess && (
+          {previewCarga.isSuccess && (() => {
+            const motoristaResolvido = motoristaEscolhido ?? previewCarga.data.sugestao_motorista;
+            const veiculoResolvido = veiculoEscolhido ?? previewCarga.data.sugestao_veiculo;
+            const faltaSelecao = !motoristaResolvido || !veiculoResolvido;
+            return (
             <>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <MotoristaPickerFusion
                   id="select-motorista"
-                  sugestao={preview.data.sugestao_motorista}
+                  sugestao={previewCarga.data.sugestao_motorista}
                   escolhido={motoristaEscolhido}
                   onEscolher={setMotoristaEscolhido}
                 />
 
-                <div className="flex flex-col gap-1">
-                  <Label htmlFor="select-veiculo">Veículo</Label>
-                  <select
-                    id="select-veiculo"
-                    className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
-                    value={veiculoId ?? preview.data.sugestao_veiculo_id ?? ""}
-                    onChange={(e) => setVeiculoId(e.target.value ? Number(e.target.value) : null)}
-                  >
-                    <option value="">— nenhum —</option>
-                    {(veiculos.data ?? []).map((v) => (
-                      <option key={v.id} value={v.id}>
-                        {v.descricao ?? v.placa} ({v.codigo_erp})
-                        {preview.data.sugestao_veiculo_id === v.id ? " · sugerido pelo CISS" : ""}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                <VeiculoPickerFusion
+                  id="select-veiculo"
+                  sugestao={previewCarga.data.sugestao_veiculo}
+                  escolhido={veiculoEscolhido}
+                  onEscolher={setVeiculoEscolhido}
+                />
               </div>
 
-              <CargaResumoCard
-                payload={preview.data.payload}
-                motorista={motoristaEscolhido ?? preview.data.sugestao_motorista}
-                veiculo={
-                  (veiculos.data ?? []).find(
-                    (v) => v.id === (veiculoId ?? preview.data.sugestao_veiculo_id)
-                  ) ?? null
-                }
+              {faltaSelecao && (
+                <p className="rounded-md bg-destructive/10 px-3 py-2.5 text-sm text-destructive-text">
+                  Selecione {!motoristaResolvido && !veiculoResolvido
+                    ? "motorista e veículo"
+                    : !motoristaResolvido
+                      ? "um motorista"
+                      : "um veículo"} antes de enviar.
+                </p>
+              )}
+
+              <ResumoCard
+                rotulo="Carga"
+                payload={previewCarga.data.payload}
+                motorista={motoristaEscolhido ?? previewCarga.data.sugestao_motorista}
+                veiculo={veiculoEscolhido ?? previewCarga.data.sugestao_veiculo}
               />
 
-              {preview.data.avisos.length > 0 && (
+              {previewCarga.data.avisos.length > 0 && (
                 <ul className="list-disc rounded-md bg-yellow-500/10 px-3 py-2.5 pl-6 text-sm text-foreground">
-                  {preview.data.avisos.map((aviso) => (
+                  {previewCarga.data.avisos.map((aviso) => (
                     <li key={aviso}>{aviso}</li>
                   ))}
                 </ul>
               )}
 
               <PedidosParaEnvio
-                itens={preview.data.itens}
+                tipo="carga"
+                itens={previewCarga.data.itens}
                 selecionados={itensSelecionados}
-                onAlternarPedido={(numeros) => alternarPedido(numeros, preview.data.itens)}
+                onAlternarPedido={(numeros) => alternarPedido(numeros, previewCarga.data.itens)}
               />
 
-              {preview.data.item_fila?.status === "ENVIADA" && !confirmarReenvio && (
+              {previewCarga.data.item_fila?.status === "ENVIADA" && !confirmarReenvio && (
                 <p className="rounded-md bg-yellow-500/10 px-3 py-2.5 text-sm text-foreground">
-                  {preview.data.item_fila.integrada_manualmente
+                  {previewCarga.data.item_fila.integrada_manualmente
                     ? "Esta carga já foi marcada como integrada manualmente (sem passar por esta tool) em "
                     : "Esta carga já foi enviada ao Fusion em "}
-                  {formatarData(preview.data.item_fila.enviado_em)}.
+                  {formatarData(previewCarga.data.item_fila.enviado_em)}.
                 </p>
               )}
 
               <div className="flex flex-wrap gap-2">
-                {preview.data.item_fila?.status === "ENVIADA" && !confirmarReenvio ? (
+                {previewCarga.data.item_fila?.status === "ENVIADA" && !confirmarReenvio ? (
                   <Button type="button" variant="outline" onClick={() => setConfirmarReenvio(true)}>
                     Reenviar mesmo assim
                   </Button>
@@ -401,8 +551,9 @@ export function BuscaCargasSection({ cargaPreSelecionada }: Props) {
                     <Button
                       type="button"
                       variant={confirmarReenvio ? "destructive" : "default"}
-                      onClick={() => enviarCarga(confirmarReenvio)}
-                      disabled={enviar.isPending}
+                      onClick={() => enviarCargaSelecionada(confirmarReenvio)}
+                      disabled={enviar.isPending || faltaSelecao}
+                      title={faltaSelecao ? "Selecione motorista e veículo antes de enviar." : undefined}
                     >
                       {enviar.isPending ? <LoaderCircle className="animate-spin" /> : <Send />}
                       {confirmarReenvio ? "Confirmar reenvio" : "Enviar ao Fusion"}
@@ -434,7 +585,106 @@ export function BuscaCargasSection({ cargaPreSelecionada }: Props) {
                 </p>
               )}
             </>
+            );
+          })()}
+        </div>
+      )}
+
+      {selecionada?.tipo === "pre-carga" && (
+        <div className="flex flex-col gap-3 rounded-md border border-border p-4">
+          <p className="flex items-center gap-2 text-sm font-medium text-foreground">
+            Pré-carga {selecionada.idEmpresa}_{selecionada.idPrecarga}
+            <TagPreCarga />
+          </p>
+
+          {previewPreCarga.isPending && (
+            <p className="flex items-center gap-2 text-sm text-muted-foreground">
+              <LoaderCircle className="animate-spin size-4" /> Montando prévia...
+            </p>
           )}
+
+          {previewPreCarga.isSuccess && (() => {
+            const faltaSelecao = !motoristaEscolhido || !veiculoEscolhido;
+            return (
+            <>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <MotoristaPickerFusion
+                  id="pc-select-motorista"
+                  sugestao={null}
+                  escolhido={motoristaEscolhido}
+                  onEscolher={setMotoristaEscolhido}
+                />
+
+                <VeiculoPickerFusion
+                  id="pc-select-veiculo"
+                  sugestao={null}
+                  escolhido={veiculoEscolhido}
+                  onEscolher={setVeiculoEscolhido}
+                />
+              </div>
+
+              {faltaSelecao && (
+                <p className="rounded-md bg-destructive/10 px-3 py-2.5 text-sm text-destructive-text">
+                  Selecione {!motoristaEscolhido && !veiculoEscolhido
+                    ? "motorista e veículo"
+                    : !motoristaEscolhido
+                      ? "um motorista"
+                      : "um veículo"} antes de enviar.
+                </p>
+              )}
+
+              <ResumoCard
+                rotulo="Pré-carga"
+                payload={previewPreCarga.data.payload}
+                motorista={motoristaEscolhido}
+                veiculo={veiculoEscolhido}
+              />
+
+              {previewPreCarga.data.avisos.length > 0 && (
+                <ul className="list-disc rounded-md bg-yellow-500/10 px-3 py-2.5 pl-6 text-sm text-foreground">
+                  {previewPreCarga.data.avisos.map((aviso) => (
+                    <li key={aviso}>{aviso}</li>
+                  ))}
+                </ul>
+              )}
+
+              <PedidosParaEnvio
+                tipo="pre-carga"
+                itens={previewPreCarga.data.itens}
+                selecionados={itensSelecionados}
+                onAlternarPedido={(numeros) => alternarPedido(numeros, previewPreCarga.data.itens)}
+              />
+
+              {previewPreCarga.data.item_fila?.status === "ENVIADA" && !confirmarReenvio && (
+                <p className="rounded-md bg-yellow-500/10 px-3 py-2.5 text-sm text-foreground">
+                  Esta pré-carga já foi enviada ao Fusion em{" "}
+                  {formatarData(previewPreCarga.data.item_fila.enviado_em)}.
+                </p>
+              )}
+
+              <div className="flex flex-wrap gap-2">
+                {previewPreCarga.data.item_fila?.status === "ENVIADA" && !confirmarReenvio ? (
+                  <Button type="button" variant="outline" onClick={() => setConfirmarReenvio(true)}>
+                    Reenviar mesmo assim
+                  </Button>
+                ) : (
+                  <Button
+                    type="button"
+                    variant={confirmarReenvio ? "destructive" : "default"}
+                    onClick={() => enviarPreCargaSelecionada(confirmarReenvio)}
+                    disabled={enviarPreCarga.isPending || faltaSelecao}
+                    title={faltaSelecao ? "Selecione motorista e veículo antes de enviar." : undefined}
+                  >
+                    {enviarPreCarga.isPending ? <LoaderCircle className="animate-spin" /> : <Send />}
+                    {confirmarReenvio ? "Confirmar reenvio" : "Enviar pré-carga ao Fusion"}
+                  </Button>
+                )}
+              </div>
+
+              {enviarPreCarga.isSuccess && <ResultadoEnvio resultado={enviarPreCarga.data} />}
+            </>
+            );
+          })()}
         </div>
       )}
 
@@ -452,7 +702,8 @@ export function BuscaCargasSection({ cargaPreSelecionada }: Props) {
           </DialogHeader>
 
           {cargaEnviada && (
-            <CargaResumoCard
+            <ResumoCard
+              rotulo="Carga"
               payload={cargaEnviada.payload}
               motorista={cargaEnviada.motorista}
               veiculo={cargaEnviada.veiculo}
@@ -480,10 +731,10 @@ interface PedidoAgrupado {
   numeros: number[];
   valorTotal: number;
   pesoTotal: number;
-  itens: ItemCargaFusion[];
+  itens: ItemComPedido[];
 }
 
-function agruparPorPedido(itens: ItemCargaFusion[]): PedidoAgrupado[] {
+function agruparPorPedido(itens: ItemComPedido[]): PedidoAgrupado[] {
   // Um "pedido" pode ter mais de uma linha em PRODUTO_RETIRADO — e vai pro
   // saveEntregaServico com todo o itens[] de uma vez (D10 da spec), então a
   // tela agrupa por pedido, não por linha. O agrupamento usa IDPLANILHADOCORI
@@ -491,7 +742,11 @@ function agruparPorPedido(itens: ItemCargaFusion[]): PedidoAgrupado[] {
   //
   // Pedido sem IDORCAMENTO (sem orçamento vinculado no CISS) não aparece
   // aqui — o backend também o ignora ao montar o envio (D11 revisado).
-  const grupos = new Map<number, ItemCargaFusion[]>();
+  //
+  // Pré-carga não tem NUMNOTA/SERIENOTA (a NF só nasce quando a carga é
+  // formada) — `"NUMNOTA" in l` cobre os dois tipos sem precisar de um
+  // branch por `tipo`.
+  const grupos = new Map<number, ItemComPedido[]>();
   for (const item of itens) {
     if (item.IDORCAMENTO == null) continue;
     const grupo = grupos.get(item.IDPLANILHADOCORI);
@@ -499,7 +754,9 @@ function agruparPorPedido(itens: ItemCargaFusion[]): PedidoAgrupado[] {
     else grupos.set(item.IDPLANILHADOCORI, [item]);
   }
   return Array.from(grupos.entries()).map(([idPlanilhaDocOri, linhas]) => {
-    const primeiroComNota = linhas.find((l) => l.NUMNOTA != null);
+    const primeiroComNota = linhas.find(
+      (l): l is ItemCargaFusion => "NUMNOTA" in l && l.NUMNOTA != null
+    );
     return {
       idPlanilhaDocOri,
       numeroPedido: linhas[0].IDORCAMENTO as number,
@@ -514,20 +771,28 @@ function agruparPorPedido(itens: ItemCargaFusion[]): PedidoAgrupado[] {
 
 /** O que vai pro Fusion, em cards legíveis — nada de payload JSON cru na
  * tela. Cada pedido é selecionável como unidade (checkbox) e expansível
- * (seta) pra ver os itens de produto que entram no saveEntregaServico. */
+ * (seta) pra ver os itens de produto que entram no saveEntregaServico.
+ * Compartilhado entre carga e pré-carga — só o texto de "sem entregas" e o
+ * rótulo de NF sem valor mudam com `tipo`. */
 function PedidosParaEnvio({
+  tipo,
   itens,
   selecionados,
   onAlternarPedido,
 }: {
-  itens: ItemCargaFusion[];
+  tipo: "carga" | "pre-carga";
+  itens: ItemComPedido[];
   selecionados: Set<number> | null;
   onAlternarPedido: (numerosDoPedido: number[]) => void;
 }) {
   const [expandidos, setExpandidos] = useState<Set<number>>(new Set());
 
   if (itens.length === 0) {
-    return <p className="text-sm text-muted-foreground">Esta carga não tem entregas.</p>;
+    return (
+      <p className="text-sm text-muted-foreground">
+        {tipo === "carga" ? "Esta carga não tem entregas." : "Esta pré-carga não tem entregas."}
+      </p>
+    );
   }
 
   const pedidos = agruparPorPedido(itens);
@@ -576,7 +841,10 @@ function PedidosParaEnvio({
                   <div className="min-w-0">
                     <p className="truncate text-sm font-medium text-foreground">
                       Pedido {pedido.numeroPedido}
-                      <span className="font-normal text-muted-foreground"> · NF {pedido.nf ?? "—"}</span>
+                      <span className="font-normal text-muted-foreground">
+                        {" "}
+                        · NF {pedido.nf ?? (tipo === "pre-carga" ? "ainda não emitida" : "—")}
+                      </span>
                     </p>
                     <p className="text-xs text-muted-foreground">
                       {pedido.numeros.length} {pedido.numeros.length === 1 ? "item" : "itens"} ·{" "}
@@ -645,39 +913,43 @@ function PedidosParaEnvio({
   );
 }
 
-/** O resumo da carga em si — destino, saída, motorista, veículo — lido do
- * payload só pelos campos que interessam à pessoa, nunca como JSON cru. */
-function CargaResumoCard({
+/** O resumo da carga/pré-carga em si — destino, saída, motorista, veículo —
+ * lido do payload só pelos campos que interessam à pessoa, nunca como JSON
+ * cru. `destino` só aparece quando o payload tem o campo preenchido —
+ * pré-carga nunca tem (DBA.PRE_CARGA não guarda UF/cidade). */
+function ResumoCard({
+  rotulo,
   payload,
   motorista,
   veiculo,
 }: {
+  rotulo: string;
   payload: Record<string, unknown>;
   motorista: MotoristaFusion | null;
   veiculo: VeiculoFusion | null;
 }) {
   const carga = (payload.cargas as Record<string, unknown>[] | undefined)?.[0];
   if (!carga) return null;
+  const destino = carga.destino ? String(carga.destino) : null;
 
   return (
     <Card className="gap-3 py-4">
       <CardHeader className="gap-1 px-4">
         <CardTitle className="flex items-center gap-2 text-sm">
           <Truck className="size-4 text-primary" />
-          Carga {String(carga.codigo_erp ?? "—")} — o que vai pro Fusion
+          {rotulo} {String(carga.codigo_erp ?? "—")} — o que vai pro Fusion
         </CardTitle>
       </CardHeader>
-      <CardContent className="grid grid-cols-2 gap-x-4 gap-y-3 px-4 text-sm sm:grid-cols-4">
-        <CampoResumo label="Destino" valor={String(carga.destino || "—")} />
+      <CardContent
+        className={`grid grid-cols-2 gap-x-4 gap-y-3 px-4 text-sm ${destino ? "sm:grid-cols-4" : "sm:grid-cols-3"}`}
+      >
+        {destino && <CampoResumo label="Destino" valor={destino} />}
         <CampoResumo label="Saída" valor={formatarData(carga.dt_saida ? String(carga.dt_saida) : null)} />
         <CampoResumo
           label="Motorista"
           valor={motorista ? `${motorista.nome} (${motorista.codigo_erp})` : "— nenhum —"}
         />
-        <CampoResumo
-          label="Veículo"
-          valor={veiculo ? `${veiculo.descricao ?? veiculo.placa} (${veiculo.codigo_erp})` : "— nenhum —"}
-        />
+        <CampoResumo label="Veículo" valor={veiculo ? rotuloVeiculo(veiculo) : "— nenhum —"} />
       </CardContent>
       {carga.obs ? (
         <CardContent className="px-4 pt-0 text-xs text-muted-foreground">Obs: {String(carga.obs)}</CardContent>

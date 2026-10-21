@@ -51,7 +51,6 @@ class CissClientFalso:
         detalhe=None,
         itens=(),
         clientes=None,
-        candidatos_veiculo=(),
         candidatos_motorista=(),
         empresas=(),
         erro=None,
@@ -65,7 +64,6 @@ class CissClientFalso:
         self._detalhe = detalhe
         self._itens = list(itens)
         self._clientes = clientes or {}
-        self._candidatos_veiculo = list(candidatos_veiculo)
         self._candidatos_motorista = list(candidatos_motorista)
         self._empresas = list(empresas)
         self._erro = erro
@@ -113,11 +111,6 @@ class CissClientFalso:
         if self._erro is not None:
             raise self._erro
         return self._clientes.get(id_clifor)
-
-    def get_veiculos_candidatos(self, termo, limite=50):
-        if self._erro is not None:
-            raise self._erro
-        return self._candidatos_veiculo
 
     def get_motoristas_candidatos(self, termo, limite=50):
         if self._erro is not None:
@@ -191,13 +184,20 @@ class FusionClienteFalso:
 
 
 class FusionPortalClienteFalso:
-    """Dublê de integrations.fusion_portal.FusionPortalClient — motorista
-    não tem mais tabela local (2026-10-20), é lido ao vivo do Fusion."""
+    """Dublê de integrations.fusion_portal.FusionPortalClient — motorista e
+    veículo não têm mais tabela local, são lidos ao vivo do Fusion."""
 
-    def __init__(self, motoristas: dict | None = None, erro=None, clientes_cadastrados: set | None = None):
+    def __init__(
+        self,
+        motoristas: dict | None = None,
+        erro=None,
+        clientes_cadastrados: set | None = None,
+        veiculos: dict | None = None,
+    ):
         self._motoristas = motoristas or {}
         self._erro = erro
         self._clientes_cadastrados = clientes_cadastrados or set()
+        self._veiculos = veiculos or {}
 
     def motorista_por_codigo_erp(self, codigo_erp):
         if self._erro is not None:
@@ -215,12 +215,39 @@ class FusionPortalClienteFalso:
             raise self._erro
         return codigo_erp in self._clientes_cadastrados
 
+    def veiculo_por_placa(self, placa):
+        if self._erro is not None:
+            raise self._erro
+        placa_norm = placa.upper().replace("-", "").replace(" ", "")
+        for veiculo in self._veiculos.values():
+            if veiculo["placa"].upper().replace("-", "").replace(" ", "") == placa_norm:
+                return veiculo
+        return None
+
+    def veiculo_por_codigo_erp(self, codigo_erp):
+        if self._erro is not None:
+            raise self._erro
+        return self._veiculos.get(codigo_erp)
+
+    def buscar_veiculos(self, termo, *, rows=250):
+        if self._erro is not None:
+            raise self._erro
+        termo_up = termo.upper()
+        return [
+            v for v in self._veiculos.values()
+            if termo_up in v["placa"].upper() or termo_up in (v.get("descricao") or "").upper()
+        ]
+
 
 def _motorista_fusion(codigo_erp: str, nome: str = "Fulano") -> dict:
     return {
         "codigo_erp": codigo_erp, "nome": nome, "cpf": "", "telefone": "",
         "endereco": "", "uf": "", "cidade": "", "cep": "",
     }
+
+
+def _veiculo_fusion(codigo_erp: str, placa: str, descricao: str = "WOLKS") -> dict:
+    return {"codigo_erp": codigo_erp, "placa": placa, "descricao": descricao, "modelo": None, "ano_modelo": None, "ano_fabricacao": None}
 
 
 DETALHE = {
@@ -430,21 +457,20 @@ def test_ver_carga_devolve_os_itens_e_as_sugestoes(client, app, config):
     corpo = resp.get_json()
     assert len(corpo["itens"]) == 2
     assert corpo["sugestao_motorista"] is None
-    assert corpo["sugestao_veiculo_id"] is None
+    assert corpo["sugestao_veiculo"] is None
 
 
 def test_ver_carga_usa_motorista_e_veiculo_escolhidos(client, app, config):
     usuario_com_a_tool(client, config)
-    app.config["FUSION_PORTAL_CLIENT"] = FusionPortalClienteFalso({"M-1": _motorista_fusion("M-1")})
-    veiculo = client.post(
-        f"{PREFIXO}/veiculos", json={"placa": "ABC1234", "codigo_erp": "V-1"}
-    ).get_json()["veiculo"]
+    app.config["FUSION_PORTAL_CLIENT"] = FusionPortalClienteFalso(
+        {"M-1": _motorista_fusion("M-1")}, veiculos={"V-1": _veiculo_fusion("V-1", "ABC1234")}
+    )
     app.config["CISS_DB_CLIENT"] = CissClientFalso(
         detalhe=DETALHE, itens=[ITEM], clientes={26623: {"CODIGO_CLIENTE": 26623}}
     )
 
     resp = client.get(
-        f"{PREFIXO}/cargas/3/22099141?motorista_codigo_erp=M-1&veiculo_id={veiculo['id']}"
+        f"{PREFIXO}/cargas/3/22099141?motorista_codigo_erp=M-1&veiculo_codigo_erp=V-1"
     )
 
     corpo = resp.get_json()
@@ -481,10 +507,9 @@ def test_ver_carga_sem_nenhum_item_selecionado_avisa(client, app, config):
 
 def test_enviar_carga_usa_selecao_do_corpo(client, app, config):
     usuario_com_a_tool(client, config)
-    app.config["FUSION_PORTAL_CLIENT"] = FusionPortalClienteFalso({"M-1": _motorista_fusion("M-1")})
-    veiculo = client.post(
-        f"{PREFIXO}/veiculos", json={"placa": "ABC1234", "codigo_erp": "V-1"}
-    ).get_json()["veiculo"]
+    app.config["FUSION_PORTAL_CLIENT"] = FusionPortalClienteFalso(
+        {"M-1": _motorista_fusion("M-1")}, veiculos={"V-1": _veiculo_fusion("V-1", "ABC1234")}
+    )
     app.config["CISS_DB_CLIENT"] = CissClientFalso(
         detalhe=DETALHE, itens=[ITEM, ITEM2], clientes={26623: {"CODIGO_CLIENTE": 26623}}
     )
@@ -493,7 +518,7 @@ def test_enviar_carga_usa_selecao_do_corpo(client, app, config):
 
     resp = client.post(
         f"{PREFIXO}/cargas/3/22099141/enviar",
-        json={"motorista_codigo_erp": "M-1", "veiculo_id": veiculo["id"], "itens": [1]},
+        json={"motorista_codigo_erp": "M-1", "veiculo_codigo_erp": "V-1", "itens": [1]},
     )
 
     assert resp.get_json()["status"] == "enviada"
@@ -504,12 +529,13 @@ def test_enviar_carga_usa_selecao_do_corpo(client, app, config):
 
 def _cadastrar_motorista_e_veiculo_da_carga(client, app):
     """DETALHE_COMPLETA tem IDMOTORISTA=63588 e PLACATRANSP='KGJ-6098'.
-    Motorista é lido ao vivo do Fusion (2026-10-20) — IDMOTORISTA é o
-    próprio codigo_erp (mesma convenção do cliente). Sem isso, a sugestão
-    automática não acha o motorista e `processar_envio` nunca chega a
-    chamar o Fusion."""
-    app.config["FUSION_PORTAL_CLIENT"] = FusionPortalClienteFalso({"63588": _motorista_fusion("63588")})
-    client.post(f"{PREFIXO}/veiculos", json={"placa": "KGJ-6098", "codigo_erp": "V-1"})
+    Motorista e veículo são lidos ao vivo do Fusion — IDMOTORISTA é o
+    próprio codigo_erp do motorista (mesma convenção do cliente), e o
+    veículo casa pela placa. Sem isso, a sugestão automática não acha
+    nenhum dos dois e `processar_envio` nunca chega a chamar o Fusion."""
+    app.config["FUSION_PORTAL_CLIENT"] = FusionPortalClienteFalso(
+        {"63588": _motorista_fusion("63588")}, veiculos={"V-1": _veiculo_fusion("V-1", "KGJ-6098")}
+    )
 
 
 DETALHE_COMPLETA = {**DETALHE, "IDMOTORISTA": 63588, "PLACATRANSP": "KGJ-6098"}
@@ -719,75 +745,33 @@ def test_remover_da_fila_inexistente_devolve_404(client, config):
 # --- /veiculos ---------------------------------------------------------------
 
 
-def test_criar_veiculo_feliz(client, config):
+def test_buscar_veiculos_sem_termo_devolve_vazio(client, app, config):
     usuario_com_a_tool(client, config)
-
-    resp = client.post(f"{PREFIXO}/veiculos", json={"placa": "KGJ-6098", "codigo_erp": "7"})
-
-    assert resp.status_code == 201
-    assert resp.get_json()["veiculo"]["placa"] == "KGJ6098"
-
-
-def test_criar_veiculo_sem_placa_devolve_400(client, config):
-    usuario_com_a_tool(client, config)
-
-    resp = client.post(f"{PREFIXO}/veiculos", json={"codigo_erp": "7"})
-
-    assert resp.status_code == 400
-
-
-def test_listar_veiculos(client, config):
-    usuario_com_a_tool(client, config)
-    client.post(f"{PREFIXO}/veiculos", json={"placa": "KGJ-6098", "codigo_erp": "7"})
+    app.config["FUSION_PORTAL_CLIENT"] = FusionPortalClienteFalso(veiculos={"V-1": _veiculo_fusion("V-1", "KGJ6098")})
 
     resp = client.get(f"{PREFIXO}/veiculos")
 
     assert resp.status_code == 200
-    assert len(resp.get_json()["veiculos"]) == 1
+    assert resp.get_json()["veiculos"] == []
 
 
-def test_atualizar_veiculo_inexistente_devolve_404(client, config):
+def test_buscar_veiculos_feliz(client, app, config):
     usuario_com_a_tool(client, config)
+    app.config["FUSION_PORTAL_CLIENT"] = FusionPortalClienteFalso(veiculos={"V-1": _veiculo_fusion("V-1", "KGJ6098")})
 
-    resp = client.put(f"{PREFIXO}/veiculos/999", json={"descricao": "x"})
-
-    assert resp.status_code == 404
-
-
-def test_candidatos_veiculo_sem_termo_devolve_vazio(client, config):
-    usuario_com_a_tool(client, config)
-
-    resp = client.get(f"{PREFIXO}/veiculos/candidatos")
+    resp = client.get(f"{PREFIXO}/veiculos?termo=kgj")
 
     assert resp.status_code == 200
-    assert resp.get_json()["candidatos"] == []
+    assert resp.get_json()["veiculos"] == [_veiculo_fusion("V-1", "KGJ6098")]
 
 
-def test_candidatos_veiculo_com_termo(client, app, config):
+def test_buscar_veiculos_portal_indisponivel_devolve_503(client, app, config):
     usuario_com_a_tool(client, config)
-    app.config["CISS_DB_CLIENT"] = CissClientFalso(candidatos_veiculo=[{"IDVEICULO": 7}])
+    app.config["FUSION_PORTAL_CLIENT"] = FusionPortalClienteFalso(erro=FusionPortalError("fora do ar"))
 
-    resp = client.get(f"{PREFIXO}/veiculos/candidatos?termo=KGJ")
+    resp = client.get(f"{PREFIXO}/veiculos?termo=kgj")
 
-    assert resp.get_json()["candidatos"] == [{"IDVEICULO": 7}]
-
-
-def test_sincronizar_veiculo_inexistente_devolve_404(client, config):
-    usuario_com_a_tool(client, config)
-
-    resp = client.post(f"{PREFIXO}/veiculos/999/sincronizar")
-
-    assert resp.status_code == 404
-
-
-def test_sincronizar_veiculo_feliz(client, app, config):
-    usuario_com_a_tool(client, config)
-    criado = client.post(f"{PREFIXO}/veiculos", json={"placa": "KGJ-6098", "codigo_erp": "7"}).get_json()["veiculo"]
-    app.config["FUSION_CLIENT"] = FusionClienteFalso()
-
-    resp = client.post(f"{PREFIXO}/veiculos/{criado['id']}/sincronizar")
-
-    assert resp.status_code == 200
+    assert resp.status_code == 503
 
 
 # --- /motoristas ---------------------------------------------------------------
@@ -993,10 +977,9 @@ def test_enviar_pre_carga_sem_motorista_e_veiculo_fica_pendente(client, app, con
 
 def test_enviar_pre_carga_com_motorista_e_veiculo_feliz(client, app, config):
     usuario_com_a_tool(client, config)
-    app.config["FUSION_PORTAL_CLIENT"] = FusionPortalClienteFalso({"M-1": _motorista_fusion("M-1")})
-    veiculo = client.post(
-        f"{PREFIXO}/veiculos", json={"placa": "ABC1234", "codigo_erp": "V-1"}
-    ).get_json()["veiculo"]
+    app.config["FUSION_PORTAL_CLIENT"] = FusionPortalClienteFalso(
+        {"M-1": _motorista_fusion("M-1")}, veiculos={"V-1": _veiculo_fusion("V-1", "ABC1234")}
+    )
     app.config["CISS_DB_CLIENT"] = CissClientFalso(
         detalhe_pre_carga=DETALHE_PRE_CARGA,
         itens_pre_carga=[ITEM_PRE_CARGA],
@@ -1007,7 +990,7 @@ def test_enviar_pre_carga_com_motorista_e_veiculo_feliz(client, app, config):
 
     resp = client.post(
         f"{PREFIXO}/pre-cargas/3/796109/enviar",
-        json={"motorista_codigo_erp": "M-1", "veiculo_id": veiculo["id"]},
+        json={"motorista_codigo_erp": "M-1", "veiculo_codigo_erp": "V-1"},
     )
 
     assert resp.get_json()["status"] == "enviada"
@@ -1019,10 +1002,9 @@ def test_enviar_pre_carga_com_motorista_e_veiculo_feliz(client, app, config):
 
 def test_enviar_pre_carga_ja_enviada_nao_chama_o_fusion_de_novo(client, app, config):
     usuario_com_a_tool(client, config)
-    app.config["FUSION_PORTAL_CLIENT"] = FusionPortalClienteFalso({"M-1": _motorista_fusion("M-1")})
-    veiculo = client.post(
-        f"{PREFIXO}/veiculos", json={"placa": "ABC1234", "codigo_erp": "V-1"}
-    ).get_json()["veiculo"]
+    app.config["FUSION_PORTAL_CLIENT"] = FusionPortalClienteFalso(
+        {"M-1": _motorista_fusion("M-1")}, veiculos={"V-1": _veiculo_fusion("V-1", "ABC1234")}
+    )
     app.config["CISS_DB_CLIENT"] = CissClientFalso(
         detalhe_pre_carga=DETALHE_PRE_CARGA,
         itens_pre_carga=[ITEM_PRE_CARGA],
@@ -1031,14 +1013,14 @@ def test_enviar_pre_carga_ja_enviada_nao_chama_o_fusion_de_novo(client, app, con
     app.config["FUSION_CLIENT"] = FusionClienteFalso(resultado_save={"success": "1", "errors": []})
     client.post(
         f"{PREFIXO}/pre-cargas/3/796109/enviar",
-        json={"motorista_codigo_erp": "M-1", "veiculo_id": veiculo["id"]},
+        json={"motorista_codigo_erp": "M-1", "veiculo_codigo_erp": "V-1"},
     )
 
     segunda = FusionClienteFalso(resultado_save={"success": "2", "errors": []})
     app.config["FUSION_CLIENT"] = segunda
     resp = client.post(
         f"{PREFIXO}/pre-cargas/3/796109/enviar",
-        json={"motorista_codigo_erp": "M-1", "veiculo_id": veiculo["id"]},
+        json={"motorista_codigo_erp": "M-1", "veiculo_codigo_erp": "V-1"},
     )
 
     assert resp.get_json()["status"] == "ja_enviada"
@@ -1072,10 +1054,9 @@ def test_remover_da_fila_pre_carga_inexistente_devolve_404(client, config):
 
 def test_enviar_carga_sincroniza_cliente_antes_de_enviar(client, app, config):
     usuario_com_a_tool(client, config)
-    app.config["FUSION_PORTAL_CLIENT"] = FusionPortalClienteFalso({"M-1": _motorista_fusion("M-1")})
-    veiculo = client.post(
-        f"{PREFIXO}/veiculos", json={"placa": "ABC1234", "codigo_erp": "V-1"}
-    ).get_json()["veiculo"]
+    app.config["FUSION_PORTAL_CLIENT"] = FusionPortalClienteFalso(
+        {"M-1": _motorista_fusion("M-1")}, veiculos={"V-1": _veiculo_fusion("V-1", "ABC1234")}
+    )
     app.config["CISS_DB_CLIENT"] = CissClientFalso(
         detalhe=DETALHE, itens=[ITEM], clientes={26623: {"CODIGO_CLIENTE": 26623}}
     )
@@ -1084,7 +1065,7 @@ def test_enviar_carga_sincroniza_cliente_antes_de_enviar(client, app, config):
 
     resp = client.post(
         f"{PREFIXO}/cargas/3/22099141/enviar",
-        json={"motorista_codigo_erp": "M-1", "veiculo_id": veiculo["id"]},
+        json={"motorista_codigo_erp": "M-1", "veiculo_codigo_erp": "V-1"},
     )
 
     assert resp.get_json()["status"] == "enviada"
@@ -1093,10 +1074,9 @@ def test_enviar_carga_sincroniza_cliente_antes_de_enviar(client, app, config):
 
 def test_enviar_pre_carga_sincroniza_cliente_antes_de_enviar(client, app, config):
     usuario_com_a_tool(client, config)
-    app.config["FUSION_PORTAL_CLIENT"] = FusionPortalClienteFalso({"M-1": _motorista_fusion("M-1")})
-    veiculo = client.post(
-        f"{PREFIXO}/veiculos", json={"placa": "ABC1234", "codigo_erp": "V-1"}
-    ).get_json()["veiculo"]
+    app.config["FUSION_PORTAL_CLIENT"] = FusionPortalClienteFalso(
+        {"M-1": _motorista_fusion("M-1")}, veiculos={"V-1": _veiculo_fusion("V-1", "ABC1234")}
+    )
     app.config["CISS_DB_CLIENT"] = CissClientFalso(
         detalhe_pre_carga=DETALHE_PRE_CARGA,
         itens_pre_carga=[ITEM_PRE_CARGA],
@@ -1107,7 +1087,7 @@ def test_enviar_pre_carga_sincroniza_cliente_antes_de_enviar(client, app, config
 
     resp = client.post(
         f"{PREFIXO}/pre-cargas/3/796109/enviar",
-        json={"motorista_codigo_erp": "M-1", "veiculo_id": veiculo["id"]},
+        json={"motorista_codigo_erp": "M-1", "veiculo_codigo_erp": "V-1"},
     )
 
     assert resp.get_json()["status"] == "enviada"
@@ -1116,10 +1096,9 @@ def test_enviar_pre_carga_sincroniza_cliente_antes_de_enviar(client, app, config
 
 def test_enviar_carga_cliente_nao_sincronizado_fica_pendente(client, app, config):
     usuario_com_a_tool(client, config)
-    app.config["FUSION_PORTAL_CLIENT"] = FusionPortalClienteFalso({"M-1": _motorista_fusion("M-1")})
-    veiculo = client.post(
-        f"{PREFIXO}/veiculos", json={"placa": "ABC1234", "codigo_erp": "V-1"}
-    ).get_json()["veiculo"]
+    app.config["FUSION_PORTAL_CLIENT"] = FusionPortalClienteFalso(
+        {"M-1": _motorista_fusion("M-1")}, veiculos={"V-1": _veiculo_fusion("V-1", "ABC1234")}
+    )
     app.config["CISS_DB_CLIENT"] = CissClientFalso(
         detalhe=DETALHE, itens=[ITEM], clientes={26623: {"CODIGO_CLIENTE": 26623}}
     )
@@ -1128,7 +1107,7 @@ def test_enviar_carga_cliente_nao_sincronizado_fica_pendente(client, app, config
 
     resp = client.post(
         f"{PREFIXO}/cargas/3/22099141/enviar",
-        json={"motorista_codigo_erp": "M-1", "veiculo_id": veiculo["id"]},
+        json={"motorista_codigo_erp": "M-1", "veiculo_codigo_erp": "V-1"},
     )
 
     corpo = resp.get_json()

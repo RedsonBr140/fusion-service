@@ -56,8 +56,8 @@ Tudo documentado em `.env.example`. Os grupos que importam:
   `saveEntregaServico`, `sendMotoristas`, `sendVeiculos`, `sendClientes`,
   `consultarVeiculo`, `consultarTodosVeiculos`). Todas ou nenhuma.
 - `FUSION_PORTAL_URL/LOGIN/SENHA` — portal web do Fusion (login humano via
-  `fusion-py`): busca e sugestão de motorista, checagem se um cliente já
-  está cadastrado. Todas ou nenhuma.
+  `fusion-py`): busca e sugestão de motorista e veículo, checagem se um
+  cliente já está cadastrado. Todas ou nenhuma.
 - `DATABASE_PATH`, `PORT`.
 
 Qualquer grupo "todas ou nenhuma" ausente faz o recurso correspondente
@@ -99,14 +99,13 @@ Toda tentativa de envio (sucesso ou falha) fica registrada em
 `cargas_fusion_fila` / `cargas_fusion_precarga_fila` — nada se perde num
 log; falha é visível e reenviável depois que o cadastro for corrigido.
 
-Motorista e cliente não têm cadastro local: motorista é lido ao vivo do
-portal web do Fusion (não existe `consultarMotorista` no SOAP), e cliente é
-sincronizado via `sendClientes` sob demanda, marcado em
-`fusion_clientes_sincronizados` pra não reenviar o cadastro em todo envio.
-Veículo e ajudante têm cadastro local (`fusion_veiculos`,
-`fusion_ajudantes`) porque o Fusion exige mais detalhe do que o CISS tem, e
-porque o `codigo_erp` precisa ser estável nos dois sentidos (cadastro ↔
-`saveCarga`).
+Motorista e veículo não têm cadastro local: os dois são lidos ao vivo do
+portal web do Fusion (não existe `consultarMotorista` no SOAP; veículo
+tem `consultarVeiculo` no SOAP, mas usa o portal pela mesma simetria).
+Cliente também não tem cadastro — é sincronizado via `sendClientes` sob
+demanda, marcado em `fusion_clientes_sincronizados` pra não reenviar o
+cadastro em todo envio. Só ajudante tem cadastro local (`fusion_ajudantes`)
+— não há papel "ajudante" no Fusion para ler de volta.
 
 ## Rotas de negócio
 
@@ -129,10 +128,6 @@ GET    /api/fila
 DELETE /api/fila/<id>
 
 GET    /api/veiculos
-GET    /api/veiculos/candidatos
-POST   /api/veiculos
-PUT    /api/veiculos/<id>
-POST   /api/veiculos/<id>/sincronizar
 
 GET    /api/motoristas
 

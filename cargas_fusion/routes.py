@@ -74,13 +74,9 @@ def _selecao_de_itens(valor) -> set[int] | None:
     return numeros
 
 
-def _sugestoes(conn, detalhe: dict) -> tuple[dict | None, dict | None]:
+def _sugestoes(detalhe: dict) -> tuple[dict | None, dict | None]:
     motorista = service.motorista_sugerido(_fusion_portal_client(), detalhe.get("IDMOTORISTA"))
-    veiculo = (
-        service.buscar_veiculo_por_placa(conn, detalhe["PLACATRANSP"])
-        if detalhe.get("PLACATRANSP")
-        else None
-    )
+    veiculo = service.veiculo_sugerido(_fusion_portal_client(), detalhe.get("PLACATRANSP"))
     return motorista, veiculo
 
 
@@ -90,7 +86,7 @@ def _montar_preview(
     id_planilha: int,
     *,
     motorista_codigo_erp: str | None = None,
-    veiculo_id: int | None = None,
+    veiculo_codigo_erp: str | None = None,
     itens_selecionados: set[int] | None = None,
 ):
     detalhe = client.get_carga_detalhe(id_empresa, id_planilha)
@@ -105,7 +101,7 @@ def _montar_preview(
     clientes = {idc: client.get_cliente_fusion(idc) for idc in ids_clifor}
 
     conn = get_db()
-    sugestao_motorista, sugestao_veiculo = _sugestoes(conn, detalhe)
+    sugestao_motorista, sugestao_veiculo = _sugestoes(detalhe)
 
     motorista = (
         service.motorista_por_codigo_erp(_fusion_portal_client(), motorista_codigo_erp)
@@ -113,7 +109,9 @@ def _montar_preview(
         else sugestao_motorista
     )
     veiculo = (
-        service.buscar_veiculo_por_id(conn, veiculo_id) if veiculo_id is not None else sugestao_veiculo
+        service.veiculo_por_codigo_erp(_fusion_portal_client(), veiculo_codigo_erp)
+        if veiculo_codigo_erp is not None
+        else sugestao_veiculo
     )
 
     origem_por_pedido = client.get_origem_pre_cargas_da_carga(id_empresa, id_planilha)
@@ -139,7 +137,7 @@ def _montar_preview_pre_carga(
     id_precarga: int,
     *,
     motorista_codigo_erp: str | None = None,
-    veiculo_id: int | None = None,
+    veiculo_codigo_erp: str | None = None,
     itens_selecionados: set[int] | None = None,
 ):
     detalhe = client.get_pre_carga_detalhe(id_empresa, id_precarga)
@@ -153,18 +151,21 @@ def _montar_preview_pre_carga(
     ids_clifor.discard(None)
     clientes = {idc: client.get_cliente_fusion(idc) for idc in ids_clifor}
 
-    conn = get_db()
     motorista = (
         service.motorista_por_codigo_erp(_fusion_portal_client(), motorista_codigo_erp)
         if motorista_codigo_erp is not None
         else None
     )
-    veiculo = service.buscar_veiculo_por_id(conn, veiculo_id) if veiculo_id is not None else None
+    veiculo = (
+        service.veiculo_por_codigo_erp(_fusion_portal_client(), veiculo_codigo_erp)
+        if veiculo_codigo_erp is not None
+        else None
+    )
 
     payload_carga, payload_entregas_servico, avisos = service.montar_payload_pre_carga(
         detalhe, itens, clientes, motorista, veiculo
     )
-    return payload_carga, payload_entregas_servico, avisos, itens_todos, clientes, motorista
+    return payload_carga, payload_entregas_servico, avisos, itens_todos, clientes, motorista, veiculo
 
 
 # --- Cargas --------------------------------------------------------------
@@ -232,7 +233,7 @@ def ver_carga(id_empresa: int, id_planilha: int):
             id_empresa,
             id_planilha,
             motorista_codigo_erp=request.args.get("motorista_codigo_erp") or None,
-            veiculo_id=_inteiro_ou_none(request.args.get("veiculo_id")),
+            veiculo_codigo_erp=request.args.get("veiculo_codigo_erp") or None,
             itens_selecionados=_selecao_de_itens(request.args.get("itens")),
         )
     except CissDbError:
@@ -259,7 +260,7 @@ def ver_carga(id_empresa: int, id_planilha: int):
                 "avisos": avisos,
                 "itens": itens_todos,
                 "sugestao_motorista": sugestao_motorista,
-                "sugestao_veiculo_id": (sugestao_veiculo or {}).get("id"),
+                "sugestao_veiculo": sugestao_veiculo,
                 "item_fila": item_fila,
             }
         ),
@@ -281,7 +282,7 @@ def enviar_carga(id_empresa: int, id_planilha: int):
             id_empresa,
             id_planilha,
             motorista_codigo_erp=corpo.get("motorista_codigo_erp") or None,
-            veiculo_id=_inteiro_ou_none(corpo.get("veiculo_id")),
+            veiculo_codigo_erp=corpo.get("veiculo_codigo_erp") or None,
             itens_selecionados=_selecao_de_itens(corpo.get("itens")),
         )
     except CissDbError:
@@ -379,7 +380,7 @@ def ver_pre_carga(id_empresa: int, id_precarga: int):
             id_empresa,
             id_precarga,
             motorista_codigo_erp=request.args.get("motorista_codigo_erp") or None,
-            veiculo_id=_inteiro_ou_none(request.args.get("veiculo_id")),
+            veiculo_codigo_erp=request.args.get("veiculo_codigo_erp") or None,
             itens_selecionados=_selecao_de_itens(request.args.get("itens")),
         )
     except CissDbError:
@@ -388,7 +389,7 @@ def ver_pre_carga(id_empresa: int, id_precarga: int):
     if resultado is None:
         return jsonify({"error": MSG_CARGA_NAO_ENCONTRADA}), 404
 
-    payload_carga, payload_entregas_servico, avisos, itens_todos, _clientes, motorista = resultado
+    payload_carga, payload_entregas_servico, avisos, itens_todos, _clientes, motorista, veiculo = resultado
     item_fila = service.buscar_item_fila_pre_carga(get_db(), id_empresa, id_precarga)
     return (
         jsonify(
@@ -398,6 +399,7 @@ def ver_pre_carga(id_empresa: int, id_precarga: int):
                 "avisos": avisos,
                 "itens": itens_todos,
                 "motorista": motorista,
+                "veiculo": veiculo,
                 "item_fila": item_fila,
             }
         ),
@@ -414,14 +416,14 @@ def enviar_pre_carga(id_empresa: int, id_precarga: int):
 
     corpo = _corpo()
     motorista_codigo_erp = corpo.get("motorista_codigo_erp") or None
-    veiculo_id = _inteiro_ou_none(corpo.get("veiculo_id"))
+    veiculo_codigo_erp = corpo.get("veiculo_codigo_erp") or None
     try:
         resultado = _montar_preview_pre_carga(
             client,
             id_empresa,
             id_precarga,
             motorista_codigo_erp=motorista_codigo_erp,
-            veiculo_id=veiculo_id,
+            veiculo_codigo_erp=veiculo_codigo_erp,
             itens_selecionados=_selecao_de_itens(corpo.get("itens")),
         )
     except CissDbError:
@@ -430,7 +432,7 @@ def enviar_pre_carga(id_empresa: int, id_precarga: int):
     if resultado is None:
         return jsonify({"error": MSG_CARGA_NAO_ENCONTRADA}), 404
 
-    payload_carga, payload_entregas_servico, avisos, _itens_todos, clientes, motorista = resultado
+    payload_carga, payload_entregas_servico, avisos, _itens_todos, clientes, motorista, veiculo = resultado
     saida = service.processar_envio_pre_carga(
         get_db(),
         _fusion_client(),
@@ -439,7 +441,8 @@ def enviar_pre_carga(id_empresa: int, id_precarga: int):
         service.codigo_pre_carga(id_empresa, id_precarga),
         motorista_codigo_erp,
         (motorista or {}).get("nome"),
-        veiculo_id,
+        veiculo_codigo_erp,
+        (veiculo or {}).get("descricao") or (veiculo or {}).get("placa"),
         payload_carga,
         payload_entregas_servico,
         avisos,
@@ -486,68 +489,18 @@ def remover_da_fila(id_: int):
     return "", 204
 
 
-# --- Cadastro: veículo -----------------------------------------------------
+# --- Veículo: lido ao vivo do Fusion ---------------------------------------
 
 
 @bp.get("/veiculos")
 @login_required
-def listar_veiculos():
-    apenas_ativos = request.args.get("todos") != "1"
-    return jsonify({"veiculos": service.listar_veiculos(get_db(), apenas_ativos=apenas_ativos)}), 200
-
-
-@bp.get("/veiculos/candidatos")
-@login_required
-def candidatos_veiculo():
-    termo = (request.args.get("termo") or "").strip()
-    if not termo:
-        return jsonify({"candidatos": []}), 200
-
-    client = _ciss_client()
-    if client is None:
-        return jsonify({"error": MSG_CISS_NAO_CONFIGURADO}), 503
-
+def buscar_veiculos():
+    termo = request.args.get("termo") or ""
     try:
-        candidatos = client.get_veiculos_candidatos(termo)
-    except CissDbError:
-        return jsonify({"error": MSG_CISS_INDISPONIVEL}), 503
-
-    return jsonify({"candidatos": candidatos}), 200
-
-
-@bp.post("/veiculos")
-@login_required
-def criar_veiculo():
-    try:
-        linha = service.salvar_veiculo(get_db(), _corpo())
-    except ValueError as erro:
-        return jsonify({"error": str(erro)}), 400
-    return jsonify({"veiculo": linha}), 201
-
-
-@bp.put("/veiculos/<int:id_>")
-@login_required
-def atualizar_veiculo(id_: int):
-    linha = service.atualizar_veiculo(get_db(), id_, _corpo())
-    if linha is None:
-        return jsonify({"error": "Veículo não encontrado."}), 404
-    return jsonify({"veiculo": linha}), 200
-
-
-@bp.post("/veiculos/<int:id_>/sincronizar")
-@login_required
-def sincronizar_veiculo(id_: int):
-    conn = get_db()
-    linha = conn.execute("SELECT placa_normalizada FROM fusion_veiculos WHERE id = ?", (id_,)).fetchone()
-    if linha is None:
-        return jsonify({"error": "Veículo não encontrado."}), 404
-
-    try:
-        atualizado = service.sincronizar_veiculo(conn, _fusion_client(), linha["placa_normalizada"])
-    except service.SincronizacaoFusionError as erro:
-        return jsonify({"error": str(erro)}), 503
-
-    return jsonify({"veiculo": atualizado}), 200
+        veiculos = service.buscar_veiculos_fusion(_fusion_portal_client(), termo)
+    except FusionPortalError:
+        return jsonify({"error": "Portal do Fusion indisponível. Tente novamente."}), 503
+    return jsonify({"veiculos": veiculos}), 200
 
 
 # --- Motorista: lido ao vivo do Fusion -------------------------------------

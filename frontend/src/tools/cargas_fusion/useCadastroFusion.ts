@@ -2,61 +2,23 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   atualizarAjudanteFusion,
-  atualizarVeiculoFusion,
   criarAjudanteFusion,
-  criarVeiculoFusion,
   getAjudantesFusion,
   getCandidatosAjudanteFusion,
-  getCandidatosVeiculoFusion,
   getMotoristasFusion,
   getVeiculosFusion,
   sincronizarAjudanteFusion,
-  sincronizarVeiculoFusion,
 } from "@/api";
-import type { AjudanteFusion, VeiculoFusion } from "@/types";
+import type { AjudanteFusion } from "@/types";
 
-// --- Veículo -----------------------------------------------------------
+// --- Veículo e motorista (lidos ao vivo do Fusion) -------------------------
+// Sem cadastro local — busca por placa/descrição ou por nome no portal.
 
-export function useVeiculos() {
-  return useQuery({
-    queryKey: ["cargas-fusion", "veiculos"],
-    queryFn: async () => (await getVeiculosFusion()).veiculos,
-  });
-}
-
-export function useCriarVeiculo() {
-  const queryClient = useQueryClient();
+export function useBuscarVeiculos() {
   return useMutation({
-    mutationFn: (dados: Partial<VeiculoFusion>) => criarVeiculoFusion(dados),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["cargas-fusion", "veiculos"] }),
+    mutationFn: (termo: string) => getVeiculosFusion(termo).then((r) => r.veiculos),
   });
 }
-
-export function useAtualizarVeiculo() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ id, dados }: { id: number; dados: Partial<VeiculoFusion> }) =>
-      atualizarVeiculoFusion(id, dados),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["cargas-fusion", "veiculos"] }),
-  });
-}
-
-export function useCandidatosVeiculo() {
-  return useMutation({
-    mutationFn: (termo: string) => getCandidatosVeiculoFusion(termo).then((r) => r.candidatos),
-  });
-}
-
-export function useSincronizarVeiculo() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (id: number) => sincronizarVeiculoFusion(id),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["cargas-fusion", "veiculos"] }),
-  });
-}
-
-// --- Motorista (lido ao vivo do Fusion, 2026-10-20) -----------------------
-// Sem cadastro local — busca por nome no portal, via useBuscarMotoristas.
 
 export function useBuscarMotoristas() {
   return useMutation({

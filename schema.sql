@@ -13,25 +13,9 @@ CREATE TABLE IF NOT EXISTS usuarios_locais (
     created_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- As cinco tabelas de negócio a seguir são cópias exatas (mesmas colunas e
--- constraints) das que existiam em meta-natal/backend/schema.sql antes da
--- extração — ver scripts/migrar_de_meta_natal.py para a migração dos dados.
-
-CREATE TABLE IF NOT EXISTS fusion_veiculos (
-    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
-    placa_normalizada    TEXT NOT NULL UNIQUE,
-    codigo_erp           TEXT NOT NULL UNIQUE,
-    descricao            TEXT,
-    modelo               TEXT,
-    ano_modelo           INTEGER,
-    ano_fabricacao       INTEGER,
-    peso_max_entregas    REAL,
-    volume_max_entregas  REAL,
-    qtd_pallets_veiculo  REAL,
-    ativo                INTEGER NOT NULL DEFAULT 1,
-    created_at           TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at           TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
+-- Motorista e veículo não têm tabela própria: lidos ao vivo do portal web
+-- do Fusion (integrations/fusion_portal.py), sem cadastro local — só o
+-- codigo_erp escolhido fica gravado nas filas abaixo, como snapshot.
 
 CREATE TABLE IF NOT EXISTS fusion_ajudantes (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -70,7 +54,8 @@ CREATE TABLE IF NOT EXISTS cargas_fusion_precarga_fila (
     codigo_erp            TEXT NOT NULL,
     motorista_codigo_erp  TEXT,
     motorista_nome        TEXT,
-    veiculo_id            INTEGER REFERENCES fusion_veiculos(id),
+    veiculo_codigo_erp    TEXT,
+    veiculo_descricao     TEXT,
     status                TEXT NOT NULL DEFAULT 'PENDENTE' CHECK (status IN ('PENDENTE', 'ENVIADA')),
     motivo                TEXT,
     avisos                TEXT NOT NULL DEFAULT '[]',

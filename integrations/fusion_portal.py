@@ -6,12 +6,20 @@ este arquivo em direção a `core/` ou a uma tool, mesmo princípio de
 
 `fusion-py` fala com o **portal web** do Fusion DMS — login humano
 (`/login.html`, sessão por cookie `PHPSESSID`), não o webservice SOAP que
-`integrations/fusion.py` usa. Usado aqui para duas coisas que o SOAP não
+`integrations/fusion.py` usa. Usado aqui para coisas que o SOAP não
 oferece: conferir se um cliente já está cadastrado (não há
 `consultarCliente` no WSDL) antes de `sendClientes`, e ler o cadastro de
-motorista direto do Fusion (não há `consultarMotorista` no WSDL, e desde
-2026-10-20 o Fusion passou a ser a única fonte — ver `tools/cargas_fusion/
-service.py`, motorista não tem mais tabela local).
+motorista e de veículo direto do Fusion (não há `consultarMotorista` no
+WSDL; `consultarVeiculo` existe no SOAP, mas o portal também cobre
+veículo e segue o mesmo padrão de motorista — nenhum dos dois tem mais
+tabela local, ver `cargas_fusion/service.py`).
+
+Veículo (`buscar_veiculos`, fusion-py) não tem campo de filtro confirmado
+na grade do portal (`get_transportes.php`) — a captura usada para
+desenhar o serviço listou tudo sem `campo`/`valor`. Por isso a busca por
+placa/termo aqui é sempre "lista tudo, filtra em Python", diferente de
+motorista (`buscar_motoristas`), que filtra no próprio servidor via
+`CAMPO_NOME`/`CAMPO_CODIGO_ERP`.
 
 Confirmado ao vivo (2026-10-20): o host certo é o padrão da biblioteca
 (`fusiondms.com.br`) — **não** `int.fusiondms.com.br` (o host do webservice
@@ -23,6 +31,7 @@ pra fora).
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -31,6 +40,7 @@ from typing import TYPE_CHECKING
 
 from fusion import FusionClient as _FusionPyClient
 from fusion import Motorista as _FusionPyMotorista
+from fusion import Veiculo as _FusionPyVeiculo
 from fusion.config import FusionConfig as _FusionPyConfig
 from fusion.exceptions import FusionError as _FusionPyError
 from fusion.services.clientes import CAMPO_CODIGO_ERP as _CAMPO_CLIENTE_CODIGO_ERP
@@ -63,6 +73,30 @@ def _motorista_para_dict(motorista: _FusionPyMotorista) -> dict[str, object]:
         "uf": motorista.uf or "",
         "cidade": motorista.cidade or "",
         "cep": motorista.cep or "",
+    }
+
+
+def _normalizar_placa(placa: str) -> str:
+    """Mesma normalização de `cargas_fusion/service.py::normalizar_placa`
+    (sem hífen/espaço, maiúscula) — duplicada aqui, não importada de lá,
+    porque `integrations/` não depende de `cargas_fusion/` (a fronteira só
+    fala com o Fusion, nunca o contrário)."""
+    return re.sub(r"[^A-Z0-9]", "", (placa or "").upper())
+
+
+def _veiculo_para_dict(veiculo: _FusionPyVeiculo) -> dict[str, object]:
+    """Mesmas chaves que `veiculo_local_para_envio_fusion`
+    (`cargas_fusion/service.py`) espera de uma linha de veículo — assim o
+    dado vindo direto do Fusion encaixa sem tradução extra em quem antes
+    consumia o cadastro local (`fusion_veiculos`, retirado — veículo segue
+    motorista e passa a não ter mais tabela própria)."""
+    return {
+        "codigo_erp": veiculo.codigo_erp,
+        "placa": veiculo.placa,
+        "descricao": veiculo.descricao,
+        "modelo": veiculo.modelo,
+        "ano_modelo": veiculo.ano_modelo or None,
+        "ano_fabricacao": veiculo.ano_fabricacao or None,
     }
 
 
@@ -113,3 +147,54 @@ class FusionPortalClient:
             except _FusionPyError as exc:
                 raise FusionPortalError(str(exc)) from exc
         return [_motorista_para_dict(m) for m in pagina.rows]
+
+    def veiculo_por_codigo_erp(self, codigo_erp: str) -> dict[str, object] | None:
+        """O veículo com este `codigo_erp`, ou `None` se não cadastrado —
+        mesmo papel de `motorista_por_codigo_erp`, pra escolha manual na
+        tela. Mesma ressalva de `veiculo_por_placa`: sem filtro server-side
+        confirmado, lista tudo e compara aqui."""
+        with self._sessao() as cliente:
+            try:
+                pagina = cliente.buscar_veiculos(rows=250)
+            except _FusionPyError as exc:
+                raise FusionPortalError(str(exc)) from exc
+        for veiculo in pagina.rows:
+            if veiculo.codigo_erp == codigo_erp:
+                return _veiculo_para_dict(veiculo)
+        return None
+
+    def veiculo_por_placa(self, placa: str) -> dict[str, object] | None:
+        """O veículo com esta placa, ou `None` se não cadastrado. Sem campo
+        de filtro confirmado na grade (`buscar_veiculos` do fusion-py lista
+        tudo), então busca a lista inteira e compara a placa normalizada
+        aqui — mesmo critério de `cargas_fusion/service.py::normalizar_placa`."""
+        placa_norm = _normalizar_placa(placa)
+        with self._sessao() as cliente:
+            try:
+                pagina = cliente.buscar_veiculos(rows=250)
+            except _FusionPyError as exc:
+                raise FusionPortalError(str(exc)) from exc
+        for veiculo in pagina.rows:
+            if _normalizar_placa(veiculo.placa) == placa_norm:
+                return _veiculo_para_dict(veiculo)
+        return None
+
+    def buscar_veiculos(self, termo: str, *, rows: int = 250) -> list[dict[str, object]]:
+        """Busca por placa ou descrição — usado no picker manual da tela,
+        igual a `buscar_motoristas`. Sem filtro server-side confirmado: lista
+        até `rows` veículos e filtra pelo termo aqui (case-insensitive,
+        substring)."""
+        termo_norm = termo.strip().lower()
+        if not termo_norm:
+            return []
+        with self._sessao() as cliente:
+            try:
+                pagina = cliente.buscar_veiculos(rows=rows)
+            except _FusionPyError as exc:
+                raise FusionPortalError(str(exc)) from exc
+        return [
+            _veiculo_para_dict(veiculo)
+            for veiculo in pagina.rows
+            if termo_norm in (veiculo.placa or "").lower()
+            or termo_norm in (veiculo.descricao or "").lower()
+        ]

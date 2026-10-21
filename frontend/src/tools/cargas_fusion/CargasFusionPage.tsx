@@ -4,10 +4,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { BuscaCargasSection } from "@/tools/cargas_fusion/BuscaCargasSection";
 import { CadastroPessoaSection } from "@/tools/cargas_fusion/CadastroPessoaSection";
-import { CadastroVeiculosSection } from "@/tools/cargas_fusion/CadastroVeiculosSection";
 import { FusionServiceLoginForm } from "@/tools/cargas_fusion/FusionServiceLoginForm";
 import { HistoricoSection } from "@/tools/cargas_fusion/HistoricoSection";
-import { PreCargasSection } from "@/tools/cargas_fusion/PreCargasSection";
 import {
   useAjudantes,
   useAtualizarAjudante,
@@ -17,13 +15,11 @@ import {
 } from "@/tools/cargas_fusion/useCadastroFusion";
 import { useFusionServiceAuth } from "@/tools/cargas_fusion/useFusionServiceAuth";
 
-type Secao = "busca" | "pre-cargas" | "historico" | "veiculos" | "ajudantes";
+type Secao = "busca" | "historico" | "ajudantes";
 
 const ABAS: { chave: Secao; rotulo: string }[] = [
   { chave: "busca", rotulo: "Buscar cargas" },
-  { chave: "pre-cargas", rotulo: "Pré-cargas" },
   { chave: "historico", rotulo: "Histórico" },
-  { chave: "veiculos", rotulo: "Veículos" },
   { chave: "ajudantes", rotulo: "Ajudantes" },
 ];
 
@@ -46,9 +42,9 @@ export function CargasFusionPage() {
         <CardHeader>
           <CardTitle className="text-2xl tracking-tight">Cargas Fusion</CardTitle>
           <p className="text-sm text-muted-foreground">
-            Buscar cargas no CISSPoder e integrá-las ao Fusion. Motorista vem
-            direto do Fusion; veículo e ajudante vêm de um cadastro próprio —
-            não do CISS a cada busca.
+            Buscar cargas e pré-cargas no CISSPoder e integrá-las ao Fusion.
+            Motorista e veículo vêm direto do Fusion; ajudante vem de um
+            cadastro próprio — não do CISS a cada busca.
           </p>
         </CardHeader>
 
@@ -79,9 +75,7 @@ export function CargasFusionPage() {
               {secao === "busca" && (
                 <BuscaCargasSection cargaPreSelecionada={cargaNoHistorico} />
               )}
-              {secao === "pre-cargas" && <PreCargasSection />}
               {secao === "historico" && <HistoricoSection onAbrirCarga={abrirCargaDoHistorico} />}
-              {secao === "veiculos" && <CadastroVeiculosSection />}
               {secao === "ajudantes" && (
                 <CadastroPessoaSection
                   tipo="ajudante"

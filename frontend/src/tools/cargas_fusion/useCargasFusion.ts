@@ -46,7 +46,7 @@ export function useCargaPreview(
       selecionada?.idEmpresa,
       selecionada?.idPlanilha,
       selecao.motoristaCodigoErp,
-      selecao.veiculoId,
+      selecao.veiculoCodigoErp,
       selecao.itens?.join(","),
     ],
     queryFn: () => getCargaFusionPreview(selecionada!.idEmpresa, selecionada!.idPlanilha, selecao),

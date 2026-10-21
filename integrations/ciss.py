@@ -392,7 +392,17 @@ class CissClient:
 
     def get_cliente_fusion(self, id_clifor: int) -> dict[str, object] | None:
         """Um cliente pelo `IDCLIFOR` exato, nas colunas que o `cliente{}`
-        do `saveCarga` espera."""
+        do `saveCarga` espera.
+
+        `DATA_ULTIMA_COMPRA`: achado em produção (cliente `71451`, carga
+        `2_22142332`) — `sendClientes` rejeita o lote inteiro sem esse
+        campo (`"campos obrigatorios: data_ult_compra"`), não documentado
+        antes. Sem coluna própria em `CLIENTE_FORNECEDOR`; derivado do
+        `MAX(DTMOVIMENTO)` em `DBA.NOTAS` para este `IDCLIFOR` — mesma
+        tabela que `get_indices_financeiros`/`get_movimentacoes_promocao`
+        já usam. Cai para `DTCADASTRO` quando o cliente ainda não tem
+        nenhuma nota (nunca deveria acontecer pra quem está comprando
+        agora, mas sem isso o COALESCE quebraria em NULL)."""
         return self._fetch_one(
             "SELECT "
             "CF.IDCLIFOR AS CODIGO_CLIENTE, CF.NOME AS RAZAO_CLIENTE, "
@@ -407,6 +417,10 @@ class CissClient:
             "CAST(COALESCE(CF.FONE2, '0') AS CHAR(20)) AS TEL2_CLIENTE, "
             "CAST(COALESCE(CF.FONECELULAR, '0') AS CHAR(20)) AS TEL3_CLIENTE, "
             "DATE(COALESCE(CF.DTCADASTRO, '2000-01-01')) AS DATA_CADASTRO_CLIENTE, "
+            "DATE(COALESCE("
+            "  (SELECT MAX(N.DTMOVIMENTO) FROM DBA.NOTAS N WHERE N.IDCLIFOR = CF.IDCLIFOR), "
+            "  CF.DTCADASTRO, '2000-01-01'"
+            ")) AS DATA_ULTIMA_COMPRA, "
             "CASE "
             "  WHEN CF.FLAGCALCULASUBSTITUICAO = 'F' THEN "
             "    CASE WHEN CF.FLAGCALCULASUBSTITUICAOFORAUF = 'F' THEN 'N' ELSE 'S' END "
@@ -431,22 +445,6 @@ class CissClient:
             "WHERE CF.FLAGINATIVO = 'F' AND ("
             "UPPER(CF.NOME) LIKE UPPER(?) ESCAPE '\\' "
             "OR CAST(CF.IDCLIFOR AS VARCHAR(20)) LIKE ? ESCAPE '\\'"
-            ") FETCH FIRST ? ROWS ONLY",
-            (padrao, padrao, limite),
-        )
-
-    def get_veiculos_candidatos(self, termo: str, limite: int = 50) -> list[dict[str, object]]:
-        """Candidatos a veículo no CISS, para o cadastro local de veículo."""
-        padrao = f"%{_escapar_like(termo)}%"
-        return self._fetch_all(
-            "SELECT IDVEICULO, DESCRVEICULO, PLACA, MODELO, ANOMODELO, "
-            "ANOFABRICACAO, "
-            "CAST(COALESCE(PESOMAXIMO, 20000) AS DOUBLE) AS PESOMAXIMO, "
-            "COALESCE(CAST(ALTURA * LARGURA * COMPRIMENTO AS DOUBLE), 0) AS VOLUME "
-            "FROM DBA.VEICULO "
-            "WHERE FLAGINATIVO = 'F' AND ("
-            "UPPER(DESCRVEICULO) LIKE UPPER(?) ESCAPE '\\' "
-            "OR UPPER(PLACA) LIKE UPPER(?) ESCAPE '\\'"
             ") FETCH FIRST ? ROWS ONLY",
             (padrao, padrao, limite),
         )

@@ -164,39 +164,71 @@ usa sempre o placeholder (`"1"`/`"."`). Se um cliente real precisar de
 praça/rota de verdade no Fusion, falta achar de onde viria no CISS; hoje
 não bloqueia porque qualquer valor "preenchido" satisfaz a validação.
 
-### Sincronização de cadastro: veículo lê antes, motorista nunca lê
+### Motorista e veículo: lidos ao vivo do Fusion, sem cadastro local
 
-Estratégia (`sincronizar_veiculo`/`_sincronizar_pessoa` em
-`cargas_fusion/service.py`): consultar o Fusion primeiro; se existir, usar
-o dado de lá; se não existir, semear do CISS/cadastro local e enviar.
+Nenhum dos dois tem tabela própria. Cada um expõe o mesmo trio de funções
+em `cargas_fusion/service.py` — `*_sugerido` (casa automaticamente com o
+dado da carga: `IDMOTORISTA`/`PLACATRANSP`), `*_por_codigo_erp` (escolha
+manual na tela) e `buscar_*_fusion` (busca por termo, picker) — todos
+delegando para `integrations/fusion_portal.py`
+(`FusionPortalClient.motorista_por_codigo_erp`/`buscar_motoristas` e
+`veiculo_por_placa`/`veiculo_por_codigo_erp`/`buscar_veiculos`), que fala
+com o **portal web**, não o SOAP.
 
-- **Veículo**: existe `consultar_veiculo` — o fluxo lê antes de decidir,
-  sem risco de sobrescrever edição manual feita direto no Fusion.
-- **Motorista**: não existe `consultarMotorista` — `send_motoristas` é
-  sempre upsert cego. **Risco aceito, não bug**: se alguém edita a ficha
-  de um motorista manualmente no Fusion e a tool sincroniza de novo com o
-  dado do CISS, essa edição manual é perdida.
+- **Motorista**: não existe `consultarMotorista` no WSDL — por isso o
+  portal é a única fonte de leitura, e `send_motoristas` (quando algo
+  precisa empurrar, ex. ajudante) continua sendo upsert cego.
+- **Veículo**: o SOAP tem `consultarVeiculo`/`consultarTodosVeiculos`
+  (ver acima), mas o portal (`fusion-py`, `VeiculosService.buscar` contra
+  `get_transportes.php`) cobre o mesmo caso sem precisar de outro cliente
+  — por isso a tool usa só o portal aqui também, pela mesma simetria com
+  motorista. Sem campo de filtro confirmado na grade do portal
+  (`buscar_veiculos` lista tudo com `campo`/`valor` vazios): toda busca
+  por placa/termo em `FusionPortalClient` lista e filtra em Python, não
+  no servidor.
 - **Cliente**: `_sincronizar_clientes_pendentes` tenta primeiro checar via
   portal web (`FusionPortalClient.cliente_cadastrado`, quando configurado)
   se o cliente já existe por fora; só cai pro `send_clientes` cego quando
   o portal não confirma ou não está configurado.
 
-O shape de leitura do Fusion é **camelCase** (`consultarVeiculo`:
-`codigoErp`, `anoModelo`, `pesoMaximoEntregas`, ...) e o shape de escrita é
-majoritariamente **snake_case** (`sendVeiculos`/`saveCarga`:
-`codigo_erp`, `peso_max_entregas`, mas `anoModelo`/`anoFabricacao`
-continuam camelCase mesmo no envio) — os nomes não são a mesma string com
-casing diferente, alguns mudam de fato
-(`peso_max_entregas` ≠ `pesoMaximoEntregas`). `_veiculo_fusion_para_local`
-é a tradução leitura → cadastro local; `veiculo_local_para_envio_fusion` é
-cadastro local → envio. Não reaproveitar um dicionário entre as duas
-direções.
+A grade do portal para veículo (`get_transportes.php`) não traz
+`peso_max_entregas`/`volume_max_entregas`/`qtd_pallets_veiculo` — nunca
+houve fonte melhor que placeholder pra esses campos (nem quando vinham do
+extinto cadastro local, semeado do CISS). Mandar esses três como número
+`0` cru (em vez da string `"0.000"`) é a mesma quirk do PHP `empty()`
+tratando zero numérico como "não informado" (ver a quirk do "0" acima) —
+sem fonte real nunca houve valor não-zero pra eles de qualquer forma, mas
+`veiculo_local_para_envio_fusion` passa os três por `_numero_informado`
+por precaução, nunca `.get(...) or 0` cru. **Isso não é a causa do erro
+de aspas abaixo** — foi corrigido na mesma sessão, mas bisecionado contra
+produção e descartado como explicação do `"Error ao no array_dados
+informado..."` (ver `_sem_aspas_duplas`).
 
-`consultarVeiculo` também é sensível a formato de placa: uma consulta sem
-hífen pode devolver `"Veiculo nao encontrado!"` (texto puro, não JSON)
-onde a mesma placa com hífen devolve o JSON normal — não há regra geral
-conhecida aqui, só o fato observado. Por isso qualquer resposta que não
-seja `dict` é "não encontrado", nunca `FusionUnavailable`.
+### Aspas duplas em texto livre quebram `array_dados` inteiro — não é por campo
+
+Confirmado em produção, bisecionado item a item contra uma carga real
+(`1_22142248`, `saveEntregaServico`): uma descrição de produto com aspa
+dupla literal (`IDSUBPRODUTO 139919`, `'1" TIPO CUNHA'`) faz o `array_dados`
+inteiro ser rejeitado com `"Error ao no array_dados informado, por favor
+verifique as informacoes e o formato passados"` — mesmo a aspa estando
+corretamente escapada no JSON (`\"`) antes de entrar no XML. O parser do
+lado do Fusion não aponta qual campo, nem qual item do lote — a mensagem é
+genérica para qualquer aspa dupla em qualquer string, em qualquer lugar do
+payload (não só `descricao` — nome de cliente, endereço, qualquer texto
+livre vindo do CISS pode trazer uma).
+
+Removendo a aspa desse item isoladamente, a mesma chamada passa. Por isso
+a correção vive em `integrations/fusion.py::_sem_aspas_duplas` — percorre
+`array_dados` recursivamente (dict/list/str) trocando `"` por `'` em toda
+string, chamada de dentro de `FusionClient._chamar_array` antes do
+`json.dumps`. Corrigir só no call site da `descricao` do produto resolveria
+este caso, mas não o próximo campo de texto livre que trouxer uma aspa —
+por isso a sanitização é na fronteira de transporte, não no monta-payload.
+
+O SOAP (`consultar_veiculo`/`send_veiculos` em `integrations/fusion.py`)
+segue existindo como parte do contrato do `FusionClient` — mapeado no
+WSDL, pode servir outro caso de uso — mas `cargas_fusion/service.py` não
+chama nenhum dos dois hoje; o fluxo de veículo passou a ser só portal.
 
 ### Cliente: o cadastro precisa existir antes do pedido
 

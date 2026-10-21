@@ -8,7 +8,6 @@
 import type {
   AjudanteFusion,
   CandidatoPessoaCiss,
-  CandidatoVeiculoCiss,
   CargaResumo,
   EmpresaEstoque,
   ItemFilaFusion,
@@ -109,7 +108,7 @@ export function getCargaFusionPreview(
 ): Promise<PreviewCargaFusion> {
   const parametros = new URLSearchParams();
   if (selecao.motoristaCodigoErp != null) parametros.set("motorista_codigo_erp", selecao.motoristaCodigoErp);
-  if (selecao.veiculoId != null) parametros.set("veiculo_id", String(selecao.veiculoId));
+  if (selecao.veiculoCodigoErp != null) parametros.set("veiculo_codigo_erp", selecao.veiculoCodigoErp);
   if (selecao.itens != null) parametros.set("itens", selecao.itens.join(","));
   const query = parametros.toString();
   return request(`/api/cargas/${idEmpresa}/${idPlanilha}${query ? `?${query}` : ""}`);
@@ -127,7 +126,7 @@ export function enviarCargaFusion(
     method: "POST",
     body: JSON.stringify({
       motorista_codigo_erp: selecao.motoristaCodigoErp ?? undefined,
-      veiculo_id: selecao.veiculoId ?? undefined,
+      veiculo_codigo_erp: selecao.veiculoCodigoErp ?? undefined,
       itens: selecao.itens ?? undefined,
       forcar: forcar || undefined,
     }),
@@ -175,7 +174,7 @@ export function getPreCargaFusionPreview(
 ): Promise<PreviewPreCargaFusion> {
   const parametros = new URLSearchParams();
   if (selecao.motoristaCodigoErp != null) parametros.set("motorista_codigo_erp", selecao.motoristaCodigoErp);
-  if (selecao.veiculoId != null) parametros.set("veiculo_id", String(selecao.veiculoId));
+  if (selecao.veiculoCodigoErp != null) parametros.set("veiculo_codigo_erp", selecao.veiculoCodigoErp);
   if (selecao.itens != null) parametros.set("itens", selecao.itens.join(","));
   const query = parametros.toString();
   return request(`/api/pre-cargas/${idEmpresa}/${idPrecarga}${query ? `?${query}` : ""}`);
@@ -191,7 +190,7 @@ export function enviarPreCargaFusion(
     method: "POST",
     body: JSON.stringify({
       motorista_codigo_erp: selecao.motoristaCodigoErp ?? undefined,
-      veiculo_id: selecao.veiculoId ?? undefined,
+      veiculo_codigo_erp: selecao.veiculoCodigoErp ?? undefined,
       itens: selecao.itens ?? undefined,
       forcar: forcar || undefined,
     }),
@@ -206,37 +205,16 @@ export function removerDaFilaPreCargasFusion(id: number): Promise<void> {
   return request(`/api/pre-cargas/fila/${id}`, { method: "DELETE" });
 }
 
-// --- Veículos --------------------------------------------------------------
+// --- Veículo e motorista: ao vivo no Fusion, sem cadastro local ------------
 
-export function getVeiculosFusion(todos = false): Promise<{ veiculos: VeiculoFusion[] }> {
-  return request(`/api/veiculos${todos ? "?todos=1" : ""}`);
+/** Busca ao vivo no portal do Fusion, por placa ou descrição — veículo não
+ * tem cadastro local. `termo` vazio devolve lista vazia. */
+export function getVeiculosFusion(termo = ""): Promise<{ veiculos: VeiculoFusion[] }> {
+  return request(`/api/veiculos?termo=${encodeURIComponent(termo)}`);
 }
-
-export function criarVeiculoFusion(dados: Partial<VeiculoFusion>): Promise<{ veiculo: VeiculoFusion }> {
-  return request("/api/veiculos", { method: "POST", body: JSON.stringify(dados) });
-}
-
-export function atualizarVeiculoFusion(
-  id: number,
-  dados: Partial<VeiculoFusion>
-): Promise<{ veiculo: VeiculoFusion }> {
-  return request(`/api/veiculos/${id}`, { method: "PUT", body: JSON.stringify(dados) });
-}
-
-export function getCandidatosVeiculoFusion(
-  termo: string
-): Promise<{ candidatos: CandidatoVeiculoCiss[] }> {
-  return request(`/api/veiculos/candidatos?termo=${encodeURIComponent(termo)}`);
-}
-
-export function sincronizarVeiculoFusion(id: number): Promise<{ veiculo: VeiculoFusion }> {
-  return request(`/api/veiculos/${id}/sincronizar`, { method: "POST" });
-}
-
-// --- Motorista: ao vivo no Fusion, sem cadastro local -----------------------
 
 /** Busca ao vivo no portal do Fusion, por nome — motorista não tem
- * cadastro local (2026-10-20). `termo` vazio devolve lista vazia. */
+ * cadastro local. `termo` vazio devolve lista vazia. */
 export function getMotoristasFusion(termo = ""): Promise<{ motoristas: MotoristaFusion[] }> {
   return request(`/api/motoristas?termo=${encodeURIComponent(termo)}`);
 }

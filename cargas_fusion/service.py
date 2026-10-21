@@ -2,18 +2,17 @@
 
 `integrations/ciss.py` devolve dado cru do CISS; `integrations/fusion.py`
 fala SOAP cru com o Fusion. Este arquivo é onde os dois se encontram: monta
-o payload do `saveCarga`, traduz entre o shape de leitura do Fusion
-(`consultarVeiculo`, camelCase) e o de escrita (`sendVeiculos`/`saveCarga`,
-majoritariamente snake_case — os dois não usam as mesmas chaves, confirmado
-contra o Fusion de produção), e mantém o cadastro local de motorista/
-veículo/ajudante (spec 2026-10-14-cargas-fusion-design.md §7).
+o payload do `saveCarga` e mantém o cadastro local de ajudante (spec
+2026-10-14-cargas-fusion-design.md §7). Motorista e veículo não têm mais
+cadastro local — são lidos ao vivo do portal web do Fusion
+(`integrations/fusion_portal.py`), cada um com o mesmo trio de funções
+(`*_sugerido`/`*_por_codigo_erp`/`buscar_*_fusion`).
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import re
 import sqlite3
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
@@ -22,12 +21,6 @@ from integrations.fusion import FusionClient, FusionUnavailable
 from integrations.fusion_portal import FusionPortalClient, FusionPortalError
 
 logger = logging.getLogger(__name__)
-
-
-def normalizar_placa(placa: str) -> str:
-    """Sem hífen/espaço, maiúscula — a mesma forma em todo lugar que compara
-    placa (cadastro local, PLACATRANSP do CISS, consultarVeiculo do Fusion)."""
-    return re.sub(r"[^A-Z0-9]", "", (placa or "").upper())
 
 
 def _texto(valor) -> str | None:
@@ -62,140 +55,27 @@ def _numero_informado(valor: float) -> str:
     return f"{valor:.3f}"
 
 
-# --- Cadastro local: veículo --------------------------------------------
-
-_CAMPOS_VEICULO = (
-    "codigo_erp", "descricao", "modelo", "ano_modelo", "ano_fabricacao",
-    "peso_max_entregas", "volume_max_entregas", "qtd_pallets_veiculo",
-)
-
-
-def _linha_veiculo(linha: sqlite3.Row) -> dict[str, object]:
-    return {
-        "id": linha["id"],
-        "placa": linha["placa_normalizada"],
-        "codigo_erp": linha["codigo_erp"],
-        "descricao": linha["descricao"],
-        "modelo": linha["modelo"],
-        "ano_modelo": linha["ano_modelo"],
-        "ano_fabricacao": linha["ano_fabricacao"],
-        "peso_max_entregas": linha["peso_max_entregas"],
-        "volume_max_entregas": linha["volume_max_entregas"],
-        "qtd_pallets_veiculo": linha["qtd_pallets_veiculo"],
-        "ativo": bool(linha["ativo"]),
-    }
-
-
-def listar_veiculos(conn: sqlite3.Connection, *, apenas_ativos: bool = True) -> list[dict]:
-    sql = "SELECT * FROM fusion_veiculos"
-    if apenas_ativos:
-        sql += " WHERE ativo = 1"
-    sql += " ORDER BY descricao"
-    return [_linha_veiculo(linha) for linha in conn.execute(sql)]
-
-
-def buscar_veiculo_por_placa(conn: sqlite3.Connection, placa: str) -> dict | None:
-    linha = conn.execute(
-        "SELECT * FROM fusion_veiculos WHERE placa_normalizada = ?",
-        (normalizar_placa(placa),),
-    ).fetchone()
-    return _linha_veiculo(linha) if linha else None
-
-
-def buscar_veiculo_por_id(conn: sqlite3.Connection, id_: int) -> dict | None:
-    """Para quando a escolha do veículo vem da tela, não do casamento
-    automático por `PLACATRANSP` — a pessoa que está montando o envio pode
-    preferir um veículo diferente do que a carga trouxe do CISS."""
-    linha = conn.execute("SELECT * FROM fusion_veiculos WHERE id = ?", (id_,)).fetchone()
-    return _linha_veiculo(linha) if linha else None
-
-
-def salvar_veiculo(conn: sqlite3.Connection, dados: Mapping[str, object]) -> dict:
-    """Cria ou atualiza por placa (upsert) — a placa é a chave natural de
-    quem está cadastrando, o `codigo_erp` é só mais um campo do formulário."""
-    placa = normalizar_placa(str(dados.get("placa") or ""))
-    if not placa:
-        raise ValueError("Informe a placa do veículo.")
-    codigo_erp = _texto(dados.get("codigo_erp"))
-    if not codigo_erp:
-        raise ValueError("Informe o codigo_erp do veículo.")
-
-    with conn:
-        conn.execute(
-            "INSERT INTO fusion_veiculos "
-            "(placa_normalizada, codigo_erp, descricao, modelo, ano_modelo, "
-            "ano_fabricacao, peso_max_entregas, volume_max_entregas, qtd_pallets_veiculo) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT (placa_normalizada) DO UPDATE SET "
-            "codigo_erp = excluded.codigo_erp, descricao = excluded.descricao, "
-            "modelo = excluded.modelo, ano_modelo = excluded.ano_modelo, "
-            "ano_fabricacao = excluded.ano_fabricacao, "
-            "peso_max_entregas = excluded.peso_max_entregas, "
-            "volume_max_entregas = excluded.volume_max_entregas, "
-            "qtd_pallets_veiculo = excluded.qtd_pallets_veiculo, "
-            "ativo = 1, updated_at = CURRENT_TIMESTAMP",
-            (
-                placa, codigo_erp, _texto(dados.get("descricao")), _texto(dados.get("modelo")),
-                _inteiro(dados.get("ano_modelo")), _inteiro(dados.get("ano_fabricacao")),
-                _numero(dados.get("peso_max_entregas")), _numero(dados.get("volume_max_entregas")),
-                _numero(dados.get("qtd_pallets_veiculo")),
-            ),
-        )
-    return buscar_veiculo_por_placa(conn, placa)
-
-
-def atualizar_veiculo(conn: sqlite3.Connection, id_: int, dados: Mapping[str, object]) -> dict | None:
-    campos, valores = [], []
-    for campo in (*_CAMPOS_VEICULO, "ativo"):
-        if campo not in dados:
-            continue
-        campos.append(f"{campo} = ?")
-        valores.append(int(bool(dados[campo])) if campo == "ativo" else dados[campo])
-
-    if campos:
-        campos.append("updated_at = CURRENT_TIMESTAMP")
-        with conn:
-            conn.execute(
-                f"UPDATE fusion_veiculos SET {', '.join(campos)} WHERE id = ?",
-                (*valores, id_),
-            )
-
-    linha = conn.execute("SELECT * FROM fusion_veiculos WHERE id = ?", (id_,)).fetchone()
-    return _linha_veiculo(linha) if linha else None
-
-
-# O shape de consultarVeiculo é camelCase e usa nomes que não batem 1:1 com
-# o de envio (sendVeiculos/saveCarga) — confirmado contra o Fusion de
-# produção (spec §7.1). Esta tabela é a tradução leitura → cadastro local.
-_LEITURA_FUSION_PARA_LOCAL = {
-    "codigoErp": "codigo_erp",
-    "descricao": "descricao",
-    "modelo": "modelo",
-    "anoModelo": "ano_modelo",
-    "anoFabricacao": "ano_fabricacao",
-    "pesoMaximoEntregas": "peso_max_entregas",
-    "volumeMaximoEntregas": "volume_max_entregas",
-    "quantidadePallets": "qtd_pallets_veiculo",
-}
-
-
-def _veiculo_fusion_para_local(dado_fusion: Mapping[str, object]) -> dict[str, object]:
-    campos: dict[str, object] = {}
-    for chave_fusion, campo_local in _LEITURA_FUSION_PARA_LOCAL.items():
-        valor = dado_fusion.get(chave_fusion)
-        if campo_local in ("ano_modelo", "ano_fabricacao"):
-            campos[campo_local] = _inteiro(valor)
-        elif campo_local in ("peso_max_entregas", "volume_max_entregas", "qtd_pallets_veiculo"):
-            campos[campo_local] = _numero(valor)
-        else:
-            campos[campo_local] = _texto(valor)
-    return campos
+# --- Veículo: lido ao vivo do Fusion ---------------------------------------
+# Sem cadastro local (mesma mudança de motorista, 2026-10-20): fusion-py já
+# tem o lado do veículo resolvido (`FusionClient.buscar_veiculos`, grade
+# `get_transportes.php`), sem campo de filtro confirmado — lista tudo e
+# filtra em Python, tanto aqui quanto em integrations/fusion_portal.py.
 
 
 def veiculo_local_para_envio_fusion(linha: Mapping[str, object]) -> dict[str, object]:
     """O shape que `sendVeiculos`/`saveCarga` esperam — ver o exemplo da
     doc do saveCarga: maioria dos campos em snake_case, mas `anoModelo` e
-    `anoFabricacao` continuam camelCase mesmo no envio."""
+    `anoFabricacao` continuam camelCase mesmo no envio. `linha` vem do
+    portal (`FusionPortalClient.veiculo_por_placa`/`veiculo_por_codigo_erp`),
+    sem `peso_max_entregas`/`volume_max_entregas`/`qtd_pallets_veiculo` — a
+    grade do portal não traz esses campos, nunca teve fonte melhor que
+    placeholder pra eles (nem quando vinham do antigo cadastro local,
+    semeado do CISS). Por isso vão sempre via `_numero_informado`, nunca
+    como `0`/`0.0` cru: confirmado em produção (carga `1_22142248`) que
+    mandar esses três campos como número 0 (não string) faz o `saveCarga`
+    inteiro ser rejeitado como array malformado — mesma quirk do PHP
+    `empty()` tratando zero numérico como "não informado", documentada
+    para os demais campos obrigatórios deste payload."""
     return {
         "codigo_erp": linha["codigo_erp"],
         "placa": linha["placa"],
@@ -203,57 +83,65 @@ def veiculo_local_para_envio_fusion(linha: Mapping[str, object]) -> dict[str, ob
         "modelo": linha.get("modelo") or "",
         "anoModelo": str(linha["ano_modelo"]) if linha.get("ano_modelo") is not None else "",
         "anoFabricacao": str(linha["ano_fabricacao"]) if linha.get("ano_fabricacao") is not None else "",
-        "peso_max_entregas": linha.get("peso_max_entregas") or 0,
-        "volume_max_entregas": linha.get("volume_max_entregas") or 0,
-        "qtd_pallets_veiculo": linha.get("qtd_pallets_veiculo") or 0,
+        "peso_max_entregas": _numero_informado(_numero(linha.get("peso_max_entregas")) or 0),
+        "volume_max_entregas": _numero_informado(_numero(linha.get("volume_max_entregas")) or 0),
+        "qtd_pallets_veiculo": _numero_informado(_numero(linha.get("qtd_pallets_veiculo")) or 0),
     }
+
+
+def veiculo_sugerido(
+    fusion_portal_client: FusionPortalClient | None, placa_transp: object
+) -> dict | None:
+    """Sugestão automática pra carga real, casando pela `PLACATRANSP` que
+    veio do CISS — mesmo papel de `motorista_sugerido`, mas por placa, não
+    por id. `None` sem erro quando o portal não está configurado, a carga
+    não tem placa, ou o veículo não está (ainda) cadastrado no Fusion."""
+    if fusion_portal_client is None or not placa_transp:
+        return None
+    try:
+        return fusion_portal_client.veiculo_por_placa(str(placa_transp))
+    except FusionPortalError:
+        logger.warning("Falha ao consultar veículo sugerido (PLACATRANSP=%s) no portal Fusion", placa_transp)
+        return None
+
+
+def veiculo_por_codigo_erp(
+    fusion_portal_client: FusionPortalClient | None, codigo_erp: str | None
+) -> dict | None:
+    """O veículo escolhido manualmente na tela — override de uma carga
+    real, ou a escolha obrigatória de uma pré-carga. Mesmo papel de
+    `motorista_por_codigo_erp`."""
+    if fusion_portal_client is None or not codigo_erp:
+        return None
+    try:
+        return fusion_portal_client.veiculo_por_codigo_erp(codigo_erp)
+    except FusionPortalError:
+        logger.warning("Falha ao consultar veículo %s no portal Fusion", codigo_erp)
+        return None
+
+
+def buscar_veiculos_fusion(fusion_portal_client: FusionPortalClient | None, termo: str) -> list[dict]:
+    """Busca ao vivo no portal do Fusion, por placa ou descrição —
+    substitui a listagem da extinta tabela local `fusion_veiculos`. Mesmo
+    papel de `buscar_motoristas_fusion`: propaga `FusionPortalError`, não
+    falha em silêncio — é uma busca explícita de quem está montando o
+    envio."""
+    if fusion_portal_client is None or not termo.strip():
+        return []
+    return fusion_portal_client.buscar_veiculos(termo.strip())
 
 
 class SincronizacaoFusionError(Exception):
     """Falha ao sincronizar cadastro local com o Fusion — mensagem já em
-    português, pronta para a resposta HTTP."""
-
-
-def sincronizar_veiculo(
-    conn: sqlite3.Connection, fusion_client: FusionClient | None, placa: str
-) -> dict:
-    """D8/D9 da spec, metade de veículo: consulta o Fusion por placa; se
-    existir, os dados de lá substituem o cadastro local. Se não existir,
-    envia o cadastro local atual para o Fusion via `sendVeiculos`.
-
-    O veículo precisa já estar cadastrado localmente (`salvar_veiculo`)
-    antes de sincronizar — esta função não inventa um cadastro do nada.
-    """
-    if fusion_client is None:
-        raise SincronizacaoFusionError("Fusion não configurado.")
-
-    placa_norm = normalizar_placa(placa)
-    local = buscar_veiculo_por_placa(conn, placa_norm)
-    if local is None:
-        raise SincronizacaoFusionError("Cadastre o veículo localmente antes de sincronizar.")
-
-    try:
-        encontrado = fusion_client.consultar_veiculo(placa_norm)
-    except FusionUnavailable:
-        raise SincronizacaoFusionError("Fusion indisponível. Tente novamente.") from None
-
-    if isinstance(encontrado, Mapping) and encontrado.get("codigoErp"):
-        campos = _veiculo_fusion_para_local(encontrado)
-        campos["placa"] = placa_norm
-        return salvar_veiculo(conn, campos)
-
-    try:
-        fusion_client.send_veiculos([veiculo_local_para_envio_fusion(local)])
-    except FusionUnavailable:
-        raise SincronizacaoFusionError("Fusion indisponível. Tente novamente.") from None
-
-    return local
+    português, pronta para a resposta HTTP. Hoje só usada por ajudante:
+    motorista e veículo não têm mais cadastro local pra sincronizar."""
 
 
 # --- Cadastro local: ajudante ---------------------------------------------
-# Motorista não tem mais cadastro local (2026-10-20) — ver
-# `motorista_sugerido`/`motorista_por_codigo_erp`/`buscar_motoristas_fusion`,
-# que leem direto do Fusion via `fusion-py`. Ajudante continua local: não há
+# Motorista (2026-10-20) e veículo não têm mais cadastro local — ver
+# `motorista_sugerido`/`motorista_por_codigo_erp`/`buscar_motoristas_fusion`
+# e `veiculo_sugerido`/`veiculo_por_codigo_erp`/`buscar_veiculos_fusion`, que
+# leem direto do Fusion via `fusion-py`. Ajudante continua local: não há
 # `buscar_ajudantes` no Fusion (o papel "ajudante" não existe lá como grade
 # própria, só como `sendMotoristas` com `tipo="Ajudante"` — não há
 # `get_ajudantes.php` equivalente ao `get_motoristas.php`).
@@ -531,6 +419,11 @@ def _cliente_para_sendclientes(cliente_ciss: Mapping[str, object], id_empresa: i
         "email1_cliente": _texto(cliente_ciss.get("EMAIL1_CLIENTE")) or "",
         "tel1_cliente": _texto(cliente_ciss.get("TEL1_CLIENTE")) or "",
         "data_cadastro_cliente": _texto(cliente_ciss.get("DATA_CADASTRO_CLIENTE")) or "",
+        # Achado em produção (cliente 71451, carga 2_22142332): sem este
+        # campo o sendClientes rejeita o lote inteiro — "campos
+        # obrigatorios: data_ult_compra". Sem coluna própria no CISS,
+        # get_cliente_fusion deriva de MAX(NOTAS.DTMOVIMENTO).
+        "data_ult_compra": _texto(cliente_ciss.get("DATA_ULTIMA_COMPRA")) or "",
     }
 
 
@@ -771,7 +664,10 @@ def _montar_payload(
                 "pedido_orig": cod_pedido,
                 "nf": _texto(primeiro.get("NUMNOTA")) or "",
                 "serie": _texto(primeiro.get("SERIENOTA")) or "",
-                "valor": str(valor_total),
+                # _numero_informado, não str() cru: valor_total é soma de
+                # VALTOTLIQUIDO (int 0 quando todas as linhas vêm NULL),
+                # e str(0) == "0" cai na mesma quirk do PESOBRUTO abaixo.
+                "valor": _numero_informado(valor_total),
                 "peso": _numero_informado(peso_total),
                 "vendedor_erp": _texto(primeiro.get("IDVENDEDOR")) or "",
                 # Nomes diferentes do stub de saveCarga (empresa_fat/log/digit,
@@ -802,8 +698,14 @@ def _montar_payload(
                 "itens": [
                     {
                         "cod_produto_erp": str(i.get("IDSUBPRODUTO") or ""),
-                        "qtd": str(_numero(i.get("QTDPRODUTO")) or 0),
-                        "peso": str(_numero(i.get("PESOBRUTO")) or 0),
+                        # qtd/peso: mesma quirk do "0" que preco/subtotal
+                        # abaixo — confirmado em produção (carga
+                        # 1_22142248, itens sem PESOBRUTO cadastrado):
+                        # mandar "0" cru aqui rejeita o saveEntregaServico
+                        # inteiro como array malformado, sem apontar qual
+                        # campo. _numero_informado garante "0.000", nunca "0".
+                        "qtd": _numero_informado(_numero(i.get("QTDPRODUTO")) or 0),
+                        "peso": _numero_informado(_numero(i.get("PESOBRUTO")) or 0),
                         # descricao resolvido: PRODUTO.DESCRCOMPRODUTO, via
                         # get_itens_carga (confirmado contra o schema real do
                         # DB2 — estava em PRODUTO, não em PRODUTO_GRADE como a
@@ -859,7 +761,7 @@ def _montar_payload(
     if motorista is None:
         avisos.append("Nenhum motorista encontrado no Fusion para esta carga.")
     if veiculo is None:
-        avisos.append("Nenhum veículo cadastrado localmente para esta carga.")
+        avisos.append("Nenhum veículo encontrado no Fusion para esta carga.")
 
     carga_payload = {
         "codigo_erp": cod_carga,
@@ -1246,7 +1148,8 @@ def _linha_fila_pre_carga(linha: sqlite3.Row) -> dict[str, object]:
         "codigo_erp": linha["codigo_erp"],
         "motorista_codigo_erp": linha["motorista_codigo_erp"],
         "motorista_nome": linha["motorista_nome"],
-        "veiculo_id": linha["veiculo_id"],
+        "veiculo_codigo_erp": linha["veiculo_codigo_erp"],
+        "veiculo_descricao": linha["veiculo_descricao"],
         "status": linha["status"],
         "motivo": linha["motivo"],
         "avisos": json.loads(linha["avisos"]) if linha["avisos"] else [],
@@ -1322,20 +1225,22 @@ def _registrar_falha_na_fila_pre_carga(
     codigo_erp: str,
     motorista_codigo_erp: str | None,
     motorista_nome: str | None,
-    veiculo_id: int | None,
+    veiculo_codigo_erp: str | None,
+    veiculo_descricao: str | None,
     motivo: str,
     avisos: Sequence[str],
 ) -> dict:
     with conn:
         conn.execute(
             "INSERT INTO cargas_fusion_precarga_fila "
-            "(id_empresa, id_precarga, codigo_erp, motorista_codigo_erp, motorista_nome, veiculo_id, "
-            "status, motivo, avisos, tentativas) "
-            "VALUES (?, ?, ?, ?, ?, ?, 'PENDENTE', ?, ?, 1) "
+            "(id_empresa, id_precarga, codigo_erp, motorista_codigo_erp, motorista_nome, "
+            "veiculo_codigo_erp, veiculo_descricao, status, motivo, avisos, tentativas) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDENTE', ?, ?, 1) "
             "ON CONFLICT (id_empresa, id_precarga) DO UPDATE SET "
             "codigo_erp = excluded.codigo_erp, motorista_codigo_erp = excluded.motorista_codigo_erp, "
             "motorista_nome = excluded.motorista_nome, "
-            "veiculo_id = excluded.veiculo_id, status = 'PENDENTE', "
+            "veiculo_codigo_erp = excluded.veiculo_codigo_erp, "
+            "veiculo_descricao = excluded.veiculo_descricao, status = 'PENDENTE', "
             "motivo = excluded.motivo, avisos = excluded.avisos, "
             "tentativas = cargas_fusion_precarga_fila.tentativas + 1, "
             "updated_at = CURRENT_TIMESTAMP",
@@ -1345,7 +1250,8 @@ def _registrar_falha_na_fila_pre_carga(
                 codigo_erp,
                 motorista_codigo_erp,
                 motorista_nome,
-                veiculo_id,
+                veiculo_codigo_erp,
+                veiculo_descricao,
                 motivo,
                 json.dumps(list(avisos), ensure_ascii=False),
             ),
@@ -1360,20 +1266,25 @@ def _marcar_enviada_na_fila_pre_carga(
     codigo_erp: str,
     motorista_codigo_erp: str | None,
     motorista_nome: str | None,
-    veiculo_id: int | None,
+    veiculo_codigo_erp: str | None,
+    veiculo_descricao: str | None,
 ) -> dict:
     with conn:
         conn.execute(
             "INSERT INTO cargas_fusion_precarga_fila "
-            "(id_empresa, id_precarga, codigo_erp, motorista_codigo_erp, motorista_nome, veiculo_id, "
-            "status, motivo, avisos, tentativas, enviado_em) "
-            "VALUES (?, ?, ?, ?, ?, ?, 'ENVIADA', NULL, '[]', 0, CURRENT_TIMESTAMP) "
+            "(id_empresa, id_precarga, codigo_erp, motorista_codigo_erp, motorista_nome, "
+            "veiculo_codigo_erp, veiculo_descricao, status, motivo, avisos, tentativas, enviado_em) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 'ENVIADA', NULL, '[]', 0, CURRENT_TIMESTAMP) "
             "ON CONFLICT (id_empresa, id_precarga) DO UPDATE SET "
             "codigo_erp = excluded.codigo_erp, motorista_codigo_erp = excluded.motorista_codigo_erp, "
             "motorista_nome = excluded.motorista_nome, "
-            "veiculo_id = excluded.veiculo_id, status = 'ENVIADA', motivo = NULL, "
+            "veiculo_codigo_erp = excluded.veiculo_codigo_erp, "
+            "veiculo_descricao = excluded.veiculo_descricao, status = 'ENVIADA', motivo = NULL, "
             "enviado_em = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP",
-            (id_empresa, id_precarga, codigo_erp, motorista_codigo_erp, motorista_nome, veiculo_id),
+            (
+                id_empresa, id_precarga, codigo_erp, motorista_codigo_erp, motorista_nome,
+                veiculo_codigo_erp, veiculo_descricao,
+            ),
         )
     return buscar_item_fila_pre_carga(conn, id_empresa, id_precarga)
 
@@ -1386,7 +1297,8 @@ def processar_envio_pre_carga(
     codigo_erp: str,
     motorista_codigo_erp: str | None,
     motorista_nome: str | None,
-    veiculo_id: int | None,
+    veiculo_codigo_erp: str | None,
+    veiculo_descricao: str | None,
     payload_carga: Mapping[str, object],
     payload_entregas_servico: Sequence[Mapping[str, object]],
     avisos: Sequence[str],
@@ -1400,11 +1312,11 @@ def processar_envio_pre_carga(
     `saveEntregaServico` antes de `saveCarga`, avisos bloqueantes sem
     chamada ao Fusion, sincronização de cliente via `sendClientes` antes
     do `saveEntregaServico`). `codigo_erp`/`motorista_codigo_erp`/
-    `motorista_nome`/`veiculo_id` ficam gravados na fila mesmo numa falha,
-    pra tela pré-preencher a escolha na próxima tentativa — motorista não
-    tem mais `id` local (2026-10-20): o `codigo_erp` já é o identificador
-    (vem do Fusion), e o nome é snapshot pra exibir sem precisar buscar de
-    novo no Fusion."""
+    `motorista_nome`/`veiculo_codigo_erp`/`veiculo_descricao` ficam
+    gravados na fila mesmo numa falha, pra tela pré-preencher a escolha na
+    próxima tentativa — nem motorista nem veículo têm mais `id` local: o
+    `codigo_erp` já é o identificador (vem do Fusion), e nome/descrição são
+    snapshot pra exibir sem precisar buscar de novo no Fusion."""
     if not forcar:
         item_existente = buscar_item_fila_pre_carga(conn, id_empresa, id_precarga)
         if item_existente is not None and item_existente["status"] == "ENVIADA":
@@ -1413,14 +1325,15 @@ def processar_envio_pre_carga(
     if avisos:
         motivo = "; ".join(avisos)
         fila = _registrar_falha_na_fila_pre_carga(
-            conn, id_empresa, id_precarga, codigo_erp, motorista_codigo_erp, motorista_nome, veiculo_id, motivo, avisos
+            conn, id_empresa, id_precarga, codigo_erp, motorista_codigo_erp, motorista_nome,
+            veiculo_codigo_erp, veiculo_descricao, motivo, avisos,
         )
         return {"status": "pendente", "motivo": motivo, "avisos": list(avisos), "fila": fila}
 
     if fusion_client is None:
         fila = _registrar_falha_na_fila_pre_carga(
-            conn, id_empresa, id_precarga, codigo_erp, motorista_codigo_erp, motorista_nome, veiculo_id,
-            "Fusion não configurado.", (),
+            conn, id_empresa, id_precarga, codigo_erp, motorista_codigo_erp, motorista_nome,
+            veiculo_codigo_erp, veiculo_descricao, "Fusion não configurado.", (),
         )
         return {"status": "pendente", "motivo": "Fusion não configurado.", "avisos": [], "fila": fila}
 
@@ -1434,8 +1347,8 @@ def processar_envio_pre_carga(
         )
         if erro_sync:
             fila = _registrar_falha_na_fila_pre_carga(
-                conn, id_empresa, id_precarga, codigo_erp, motorista_codigo_erp, motorista_nome, veiculo_id,
-                erro_sync, (),
+                conn, id_empresa, id_precarga, codigo_erp, motorista_codigo_erp, motorista_nome,
+                veiculo_codigo_erp, veiculo_descricao, erro_sync, (),
             )
             return {"status": "pendente", "motivo": erro_sync, "avisos": [], "fila": fila}
 
@@ -1444,16 +1357,16 @@ def processar_envio_pre_carga(
             resultado_entregas = fusion_client.save_entrega_servico(list(payload_entregas_servico))
         except FusionUnavailable:
             fila = _registrar_falha_na_fila_pre_carga(
-                conn, id_empresa, id_precarga, codigo_erp, motorista_codigo_erp, motorista_nome, veiculo_id,
-                "Fusion indisponível.", (),
+                conn, id_empresa, id_precarga, codigo_erp, motorista_codigo_erp, motorista_nome,
+                veiculo_codigo_erp, veiculo_descricao, "Fusion indisponível.", (),
             )
             return {"status": "pendente", "motivo": "Fusion indisponível.", "avisos": [], "fila": fila}
 
         sucesso, motivo = _resultado_indica_sucesso(resultado_entregas)
         if not sucesso:
             fila = _registrar_falha_na_fila_pre_carga(
-                conn, id_empresa, id_precarga, codigo_erp, motorista_codigo_erp, motorista_nome, veiculo_id,
-                motivo, (),
+                conn, id_empresa, id_precarga, codigo_erp, motorista_codigo_erp, motorista_nome,
+                veiculo_codigo_erp, veiculo_descricao, motivo, (),
             )
             return {
                 "status": "pendente",
@@ -1467,20 +1380,21 @@ def processar_envio_pre_carga(
         resultado = fusion_client.save_carga([dict(payload_carga)])
     except FusionUnavailable:
         fila = _registrar_falha_na_fila_pre_carga(
-            conn, id_empresa, id_precarga, codigo_erp, motorista_codigo_erp, motorista_nome, veiculo_id,
-            "Fusion indisponível.", (),
+            conn, id_empresa, id_precarga, codigo_erp, motorista_codigo_erp, motorista_nome,
+            veiculo_codigo_erp, veiculo_descricao, "Fusion indisponível.", (),
         )
         return {"status": "pendente", "motivo": "Fusion indisponível.", "avisos": [], "fila": fila}
 
     sucesso, motivo = _resultado_indica_sucesso(resultado)
     if not sucesso:
         fila = _registrar_falha_na_fila_pre_carga(
-            conn, id_empresa, id_precarga, codigo_erp, motorista_codigo_erp, motorista_nome, veiculo_id,
-            motivo, (),
+            conn, id_empresa, id_precarga, codigo_erp, motorista_codigo_erp, motorista_nome,
+            veiculo_codigo_erp, veiculo_descricao, motivo, (),
         )
         return {"status": "pendente", "motivo": motivo, "avisos": [], "resultado": resultado, "fila": fila}
 
     fila = _marcar_enviada_na_fila_pre_carga(
-        conn, id_empresa, id_precarga, codigo_erp, motorista_codigo_erp, motorista_nome, veiculo_id
+        conn, id_empresa, id_precarga, codigo_erp, motorista_codigo_erp, motorista_nome,
+        veiculo_codigo_erp, veiculo_descricao,
     )
     return {"status": "enviada", "resultado": resultado, "fila": fila}
