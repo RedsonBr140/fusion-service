@@ -661,7 +661,17 @@ def test_processar_envio_feliz_de_primeira_tambem_fica_rastreavel(conn):
 
     item = service.buscar_item_fila(conn, 3, 22099141)
     assert item["status"] == "ENVIADA"
-    assert item["enviado_em"] is not None
+    # "T"/"Z" explícitos, não a string ingênua do sqlite3 — sem isso o
+    # frontend lê CURRENT_TIMESTAMP (sempre UTC) como hora local e exibe
+    # 3h a mais do horário de Brasília real.
+    assert item["enviado_em"].endswith("Z")
+    assert "T" in item["enviado_em"]
+
+
+def test_sqlite_utc_iso():
+    assert service._sqlite_utc_iso("2026-10-21 15:16:59") == "2026-10-21T15:16:59Z"
+    assert service._sqlite_utc_iso(None) is None
+    assert service._sqlite_utc_iso("") == ""
 
 
 def test_processar_envio_carga_ja_enviada_nao_chama_o_fusion_de_novo(conn):

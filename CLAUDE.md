@@ -292,6 +292,36 @@ incompletas ou inconsistentes com o nome usado em `saveCarga`
 bloqueia o envio inicial; só entra em cena se "editar/cancelar carga já
 enviada" virar escopo.
 
+## Fuso horário nas respostas da API — duas quirks opostas
+
+Datas que chegam ao frontend vêm de duas fontes com problemas opostos,
+ambos corrigidos na fronteira de leitura, nunca no frontend:
+
+- **CISS (`integrations/ciss.py`)**: `pyodbc` devolve `datetime`/`date`
+  ingênuos (sem timezone), mas o servidor roda no horário de Brasília
+  (`-03:00`, sem DST desde 2019), não UTC. Sem tratar isso,
+  `jsonify`/Flask serializa `datetime` cru como `"Wed, 21 Oct 2026
+  11:19:14 GMT"` (RFC 822, rotulado GMT mesmo sendo hora local) — o
+  frontend lê isso como UTC de verdade e desconta 3h ao exibir no fuso
+  do navegador, mostrando uma carga confirmada às 11h como se fosse às
+  8h. `_normalizar_valor` em `_fetch_all` converte pra ISO 8601 com
+  `-03:00` explícito antes de qualquer `datetime` cru escapar pra
+  `jsonify`.
+- **sqlite3 (`cargas_fusion/service.py`)**: o inverso. `CURRENT_TIMESTAMP`
+  é sempre UTC, mas a coluna é `TEXT` — vem como string ingênua
+  (`"2026-10-21 15:16:59"`, sem `T` nem `Z`). Sem marcação, o frontend
+  lê como hora local e não desconta nada, mostrando `enviado_em` 3h
+  **depois** do horário de Brasília real (o problema oposto ao do CISS).
+  `_sqlite_utc_iso` normaliza pra `"...T...Z"` em `_linha_fila`/
+  `_linha_fila_pre_carga` antes de devolver.
+
+Qualquer campo novo de data/hora que entrar na API — de uma dessas duas
+fontes ou de outra — precisa do mesmo tratamento: nunca deixar uma string
+de timestamp ambígua (sem offset nem `Z`) chegar ao frontend, porque
+`new Date(...)` do JavaScript interpreta ausência de fuso como "hora
+local do navegador", e cada fonte deste projeto mente sobre isso de um
+jeito diferente.
+
 ## Pendências de dado conhecidas
 
 - `preco`/`subtotal` dos itens de `saveEntregaServico`: `subtotal` vem de

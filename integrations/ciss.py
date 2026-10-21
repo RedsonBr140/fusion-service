@@ -12,13 +12,35 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from config import CissDbConfig
 
 logger = logging.getLogger(__name__)
+
+# O servidor do CISS DB2 roda no horário de Brasília, não UTC — sem DST
+# desde 2019, por isso um offset fixo (nunca precisa ajustar na virada).
+_FUSO_CISS = timezone(timedelta(hours=-3))
+
+
+def _normalizar_valor(valor: object) -> object:
+    """`pyodbc` devolve `datetime`/`date` ingênuos (sem timezone). Sem
+    marcar o fuso aqui, o provedor JSON do Flask serializa `datetime` cru
+    como `"Wed, 21 Oct 2026 11:19:14 GMT"` (formato RFC 822, rotulado GMT
+    mesmo sendo hora de Brasília) — o frontend lê isso como UTC de
+    verdade e desconta 3h ao exibir no fuso local do navegador, mostrando
+    uma carga confirmada às 11h como se fosse às 8h. Convertido pra ISO
+    8601 com offset explícito (`-03:00`) na única fronteira com o
+    `pyodbc`, pra nenhum datetime cru escapar pra `jsonify`. `date`
+    (sem hora, ex. `DATA_CADASTRO_CLIENTE`) não tem esse risco — fuso não
+    muda um dia — mas vira string aqui também, por consistência."""
+    if isinstance(valor, datetime):
+        return valor.replace(tzinfo=_FUSO_CISS).isoformat()
+    if isinstance(valor, date):
+        return valor.isoformat()
+    return valor
 
 # Defesa secundária. A primária é a permissão do usuário no DB2.
 VERBOS_PROIBIDOS = frozenset(
@@ -466,7 +488,10 @@ class CissClient:
             if cursor.description is None:
                 return []
             colunas = [coluna[0] for coluna in cursor.description]
-            return [dict(zip(colunas, linha)) for linha in cursor.fetchall()]
+            return [
+                {coluna: _normalizar_valor(valor) for coluna, valor in zip(colunas, linha)}
+                for linha in cursor.fetchall()
+            ]
         except driver.Error:
             logger.warning(
                 "Consulta ao CISS DB2 falhou (%s em %s)", self._db.database, self._db.host

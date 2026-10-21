@@ -30,6 +30,18 @@ def _texto(valor) -> str | None:
     return texto or None
 
 
+def _sqlite_utc_iso(valor: str | None) -> str | None:
+    """`CURRENT_TIMESTAMP` do sqlite3 é sempre UTC, mas devolve uma
+    string ingênua (`"YYYY-MM-DD HH:MM:SS"`, sem `T` nem `Z`) — sem essa
+    marcação, o frontend (`new Date(...)`) lê como hora local do
+    navegador e não desconta nada ao exibir, mostrando 3h a mais do
+    horário de Brasília real (o inverso da quirk das datas do CISS, que
+    vêm marcadas como GMT sem ser — ver `integrations/ciss.py`)."""
+    if not valor:
+        return valor
+    return valor.replace(" ", "T") + "Z"
+
+
 def _numero(valor) -> float | None:
     if valor is None or valor == "":
         return None
@@ -890,7 +902,7 @@ def _linha_fila(linha: sqlite3.Row) -> dict[str, object]:
         "motivo": linha["motivo"],
         "avisos": json.loads(linha["avisos"]) if linha["avisos"] else [],
         "tentativas": linha["tentativas"],
-        "enviado_em": linha["enviado_em"],
+        "enviado_em": _sqlite_utc_iso(linha["enviado_em"]),
         "integrada_manualmente": bool(linha["integrada_manualmente"]),
     }
 
@@ -1154,7 +1166,7 @@ def _linha_fila_pre_carga(linha: sqlite3.Row) -> dict[str, object]:
         "motivo": linha["motivo"],
         "avisos": json.loads(linha["avisos"]) if linha["avisos"] else [],
         "tentativas": linha["tentativas"],
-        "enviado_em": linha["enviado_em"],
+        "enviado_em": _sqlite_utc_iso(linha["enviado_em"]),
     }
 
 

@@ -188,6 +188,27 @@ def test_fetch_all_converte_linhas_em_dicionarios(monkeypatch):
     ]
 
 
+def test_fetch_all_marca_datetime_cru_com_o_fuso_do_ciss(monkeypatch):
+    """Sem isso, o provedor JSON do Flask serializa datetime ingênuo como
+    `"...GMT"` (RFC 822) — o frontend lê como UTC de verdade e desconta
+    3h ao exibir no fuso local, mostrando uma carga confirmada às 11h
+    como se fosse às 8h. O servidor do CISS roda no horário de Brasília,
+    não UTC."""
+    from datetime import date, datetime
+
+    montar_driver(
+        monkeypatch,
+        description=[("DTALTERACAO",), ("DATA_CADASTRO_CLIENTE",)],
+        linhas=[(datetime(2026, 10, 21, 11, 19, 14), date(2023, 1, 13))],
+    )
+
+    resultado = CissClient(DB)._fetch_all("SELECT DTALTERACAO, DATA_CADASTRO_CLIENTE FROM t")
+
+    assert resultado == [
+        {"DTALTERACAO": "2026-10-21T11:19:14-03:00", "DATA_CADASTRO_CLIENTE": "2023-01-13"}
+    ]
+
+
 def test_fetch_all_repassa_os_parametros_sem_interpolar(monkeypatch):
     _, _, cursor = montar_driver(monkeypatch, description=[("X",)], linhas=[])
 
