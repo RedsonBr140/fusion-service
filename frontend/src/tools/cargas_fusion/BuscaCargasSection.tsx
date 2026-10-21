@@ -731,10 +731,25 @@ interface PedidoAgrupado {
   /** O pedido real (IDORCAMENTO). */
   numeroPedido: number;
   nf: string | null;
+  /** CLIENTE_FORNECEDOR.NOME de quem é este pedido — mesmo em toda linha
+   * do pedido, pega da primeira. */
+  nomeCliente: string | null;
   numeros: number[];
   valorTotal: number;
   pesoTotal: number;
   itens: ItemComPedido[];
+}
+
+/** O peso de uma linha — nunca só `PESOBRUTO` (`ESTOQUE_ANALITICO`, o
+ * movimento de venda): essa coluna vem `0` em ~96% das linhas desta base
+ * (achado em produção, carga `1_22142248` — nenhum dos 10 itens tinha
+ * `PESOBRUTO` de movimento, mas 9 tinham `PRODUTO_PESOBRUTO` de catálogo).
+ * `PRODUTO_PESOBRUTO` é peso por unidade da grade, por isso `× QTDPRODUTO`
+ * — mesmo cálculo que o backend usa pra montar o payload do Fusion; sem
+ * isso a tela mostraria peso zerado enquanto o envio real já vai certo. */
+function pesoEfetivo(item: ItemComPedido): number {
+  if (item.PESOBRUTO) return item.PESOBRUTO;
+  return (item.PRODUTO_PESOBRUTO ?? 0) * item.QTDPRODUTO;
 }
 
 function agruparPorPedido(itens: ItemComPedido[]): PedidoAgrupado[] {
@@ -764,9 +779,10 @@ function agruparPorPedido(itens: ItemComPedido[]): PedidoAgrupado[] {
       idPlanilhaDocOri,
       numeroPedido: linhas[0].IDORCAMENTO as number,
       nf: primeiroComNota ? `${primeiroComNota.NUMNOTA}-${primeiroComNota.SERIENOTA ?? "?"}` : null,
+      nomeCliente: linhas[0].NOME_CLIENTE,
       numeros: linhas.map((l) => l.NUMSEQUENCIA),
       valorTotal: linhas.reduce((soma, l) => soma + (l.VALTOTLIQUIDO ?? 0), 0),
-      pesoTotal: linhas.reduce((soma, l) => soma + (l.PESOBRUTO ?? 0), 0),
+      pesoTotal: linhas.reduce((soma, l) => soma + pesoEfetivo(l), 0),
       itens: linhas,
     };
   });
@@ -849,6 +865,9 @@ function PedidosParaEnvio({
                         · NF {pedido.nf ?? (tipo === "pre-carga" ? "ainda não emitida" : "—")}
                       </span>
                     </p>
+                    <p className="truncate text-xs text-muted-foreground">
+                      {pedido.nomeCliente ?? "Cliente não identificado"}
+                    </p>
                     <p className="text-xs text-muted-foreground">
                       {pedido.numeros.length} {pedido.numeros.length === 1 ? "item" : "itens"} ·{" "}
                       {pedido.pesoTotal.toLocaleString("pt-BR", { maximumFractionDigits: 1 })} kg
@@ -896,7 +915,7 @@ function PedidosParaEnvio({
                             {item.QTDPRODUTO}
                             <span className="text-muted-foreground">
                               {" "}
-                              · {formatarNumero(item.PESOBRUTO, 2)} kg
+                              · {formatarNumero(pesoEfetivo(item), 2)} kg
                             </span>
                           </td>
                           <td className="py-1.5 text-right tabular-nums whitespace-nowrap text-muted-foreground">

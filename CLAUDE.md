@@ -260,6 +260,53 @@ usado em `saveEntregaServico` e no stub de `saveCarga` para os três lados
 baterem (`codigo_pedido`/`codigo_pedido_generico` em
 `cargas_fusion/service.py`).
 
+### Peso dos itens: `ESTOQUE_ANALITICO.PESOBRUTO` quase nunca tem valor
+
+`PESOBRUTO` (o peso do movimento/venda, usado desde a spec original)
+vinha `0` em **toda** linha de uma carga real testada (`1_22142248`, 10
+itens) — amostra de 500k linhas de `ESTOQUE_ANALITICO` nesta base: só
+~3.6% têm `PESOBRUTO` não-zero. Não é "produto sem peso cadastrado" como
+a spec original assumiu — é a coluna certa estar vazia quase sempre.
+`PRODUTO_GRADE.PESOBRUTO` (`PRODUTO_PESOBRUTO` no retorno de
+`get_itens_carga`/`get_itens_pre_carga`) é o peso de catálogo, **por
+unidade** da grade — precisa de `× QTDPRODUTO` pra virar peso de linha,
+mesmo tratamento que `LARGURA`/`ALTURA`/`COMPRIMENTO` (mesma tabela) já
+recebem no cálculo de cubagem. `_peso_item` em `cargas_fusion/service.py`
+usa `PESOBRUTO` do movimento quando não é zero (é dado real de uma
+transação, teria prioridade), senão cai pro catálogo × quantidade. O
+frontend replica o mesmo cálculo (`pesoEfetivo` em
+`BuscaCargasSection.tsx`) só pra exibir o peso coerente com o que
+realmente vai no payload — nunca lê `PESOBRUTO` cru pra mostrar peso.
+
+### Cliente da entrega e destino com nome do cliente
+
+`get_itens_carga`/`get_itens_pre_carga` ganham `NOME_CLIENTE` via `LEFT
+JOIN CLIENTE_FORNECEDOR` por `COALESCE(IDCLIFORENTREGA, IDCLIFOR)` — o
+mesmo cliente que `_cliente_stub_para_fusion`/`sendClientes` já resolvem,
+só que exposto por item pra tela mostrar de quem é cada pedido.
+
+Quando todo pedido de uma carga é do mesmo cliente (caso comum — uma
+única entrega, ou várias entregas da mesma obra), `_montar_payload`
+anexa o nome ao `destino` do `saveCarga`: `"TRIUNFO/PE - JAF CONSTRUCAO E
+CONSULTORIA EIRELI"`. Mais de um cliente na carga não tem nome único pra
+anexar — o destino fica só cidade/UF, como antes. `RAZAO_CLIENTE`
+(`CLIENTE_FORNECEDOR.NOME`) é a fonte do nome, mesma usada em
+`_cliente_para_sendclientes`.
+
+**Confirmado em produção: `t10_destino` trunca em exatamente 45
+caracteres, sem erro.** Testado com uma carga de teste
+(`TESTE_CLAUDE_DESTINO_CARGA_001`, id interno `813904`, inerte — tentei
+cancelar, mesmo problema de schema não mapeado de `cancelaCarga` já
+documentado abaixo): mandei 221 caracteres de `destino`,
+`detalheCarga` devolveu só os 45 primeiros, sem aviso nem erro — Fusion
+simplesmente descarta o resto. Isso significa que `"TRIUNFO/PE - JAF
+CONSTRUCAO E CONSULTORIA EIRELI"` (48 caracteres) chegaria cortado como
+`"TRIUNFO/PE - JAF CONSTRUCAO E CONSULTORIA EIR"` — perde o fim do nome
+sem ninguém saber, a não ser abrindo a carga no Fusion. Esta tool não
+faz truncamento nem priorização própria entre cidade e nome do cliente
+hoje — fica para quem decidir qual das duas partes importa mais quando
+não cabem as duas.
+
 ### Ajudante: não existe vínculo carga↔ajudante no CISS
 
 `codajudante1..4` do `saveCarga` fica sempre vazio do lado desta tool — o

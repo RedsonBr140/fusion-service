@@ -67,6 +67,28 @@ def _numero_informado(valor: float) -> str:
     return f"{valor:.3f}"
 
 
+def _peso_item(item: Mapping[str, object]) -> float:
+    """O peso de uma linha de `get_itens_carga` — nunca `ESTOQUE_ANALITICO
+    .PESOBRUTO` sozinho. Achado em produção (carga `1_22142248`, os 10
+    itens): `EA.PESOBRUTO` vem `0` em ~96% das linhas de
+    `ESTOQUE_ANALITICO` nesta base (amostra de 500k linhas, só 3.6% com
+    valor) — não é "produto sem peso cadastrado" como a spec original
+    assumiu, é a coluna errada quase sempre vazia. `PRODUTO_GRADE
+    .PESOBRUTO` (`PRODUTO_PESOBRUTO` aqui) é o peso de catálogo por
+    unidade da grade — populado pra 9 dos 10 itens daquela carga — e
+    precisa de `× QTDPRODUTO` pra virar peso da linha, mesmo tratamento
+    que `LARGURA`/`ALTURA`/`COMPRIMENTO` (mesma tabela) já recebem no
+    cálculo de cubagem. `EA.PESOBRUTO`, quando de fato populado, já é o
+    peso da linha (vem de um movimento real, não de catálogo) — por isso
+    ganha prioridade sobre o cálculo de catálogo quando não é zero."""
+    peso_movimento = _numero(item.get("PESOBRUTO")) or 0
+    if peso_movimento:
+        return peso_movimento
+    peso_catalogo = _numero(item.get("PRODUTO_PESOBRUTO")) or 0
+    qtd = _numero(item.get("QTDPRODUTO")) or 0
+    return peso_catalogo * qtd
+
+
 # --- Veículo: lido ao vivo do Fusion ---------------------------------------
 # Sem cadastro local (mesma mudança de motorista, 2026-10-20): fusion-py já
 # tem o lado do veículo resolvido (`FusionClient.buscar_veiculos`, grade
@@ -625,6 +647,9 @@ def _montar_payload(
     entrega_stubs: list[dict] = []
     entregas_carga: list[dict] = []
     entregas_servico: list[dict] = []
+    # Pra decidir se todo pedido desta carga é do mesmo cliente (e, se
+    # for, anexar o nome dele no destino — ver fim da função).
+    ids_clifor_dos_pedidos: set[int] = set()
 
     seq = 0
     for id_pedido_origem, itens_do_pedido in _agrupar_itens_por_pedido(itens):
@@ -653,10 +678,12 @@ def _montar_payload(
         cliente_ciss = clientes_por_idclifor.get(id_clifor) if id_clifor else None
         if id_clifor and cliente_ciss is None:
             avisos.append(f"Cliente {id_clifor} do pedido {id_pedido_origem} não encontrado no CISS.")
+        if id_clifor:
+            ids_clifor_dos_pedidos.add(id_clifor)
 
         cod_pedido = codigo_pedido_generico(numero_pedido, sufixo_pedido)
         valor_total = sum(_numero(i.get("VALTOTLIQUIDO")) or 0 for i in itens_do_pedido)
-        peso_total = sum(_numero(i.get("PESOBRUTO")) or 0 for i in itens_do_pedido)
+        peso_total = sum(_peso_item(i) for i in itens_do_pedido)
         # Cubagem real, a partir de LARGURA/ALTURA/COMPRIMENTO do catálogo
         # (PRODUTO_GRADE, cm) × QTDPRODUTO — cm³ para m³. Produto sem
         # dimensão cadastrada contribui 0 (comum, spec §8); o Fusion exige
@@ -717,7 +744,7 @@ def _montar_payload(
                         # inteiro como array malformado, sem apontar qual
                         # campo. _numero_informado garante "0.000", nunca "0".
                         "qtd": _numero_informado(_numero(i.get("QTDPRODUTO")) or 0),
-                        "peso": _numero_informado(_numero(i.get("PESOBRUTO")) or 0),
+                        "peso": _numero_informado(_peso_item(i)),
                         # descricao resolvido: PRODUTO.DESCRCOMPRODUTO, via
                         # get_itens_carga (confirmado contra o schema real do
                         # DB2 — estava em PRODUTO, não em PRODUTO_GRADE como a
@@ -775,12 +802,25 @@ def _montar_payload(
     if veiculo is None:
         avisos.append("Nenhum veículo encontrado no Fusion para esta carga.")
 
+    # Pedido pra um cliente só (o caso comum — carga pra uma única entrega,
+    # ou várias entregas da mesma obra/cliente): anexa o nome no destino,
+    # "TRIUNFO/PE - REDSON DOS SANTOS SILVA". Mais de um cliente na mesma
+    # carga não teria como escolher qual nome mostrar — fica só a cidade/UF.
+    # Fusion não documenta limite de tamanho pro campo `destino`; se
+    # truncar meio nome, é comportamento deles, não bug daqui.
+    destino_final = destino
+    if len(ids_clifor_dos_pedidos) == 1:
+        (unico_id_clifor,) = ids_clifor_dos_pedidos
+        nome_cliente = _texto((clientes_por_idclifor.get(unico_id_clifor) or {}).get("RAZAO_CLIENTE"))
+        if nome_cliente:
+            destino_final = f"{destino} - {nome_cliente}" if destino else nome_cliente
+
     carga_payload = {
         "codigo_erp": cod_carga,
         "dt_saida": _dt_saida_padrao(),
         "codmotorista": motorista["codigo_erp"] if motorista else "",
         "codveiculo": veiculo["codigo_erp"] if veiculo else "",
-        "destino": destino,
+        "destino": destino_final,
         "codfilialsaida": str(id_empresa),
         "obs": observacao,
         "modo_rota": "R",

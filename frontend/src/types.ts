@@ -52,11 +52,21 @@ export interface ItemCargaFusion {
   NUMNOTA: number | null;
   SERIENOTA: string | null;
   VALTOTLIQUIDO: number | null;
+  /** O peso do movimento (ESTOQUE_ANALITICO) — quase sempre 0 nesta base
+   * (~96% das linhas, achado em produção). Não usar sozinho pra exibir
+   * peso: ver pesoEfetivo() em BuscaCargasSection.tsx, que cai pro peso
+   * de catálogo (PRODUTO_PESOBRUTO × QTDPRODUTO) quando este vem zerado —
+   * mesmo cálculo que o backend usa pra montar o payload do Fusion. */
   PESOBRUTO: number | null;
   /** PRODUTO.DESCRCOMPRODUTO — a descrição completa, não a resumida. */
   DESCRCOMPRODUTO: string | null;
-  /** Dimensões/peso de catálogo (PRODUTO_GRADE), em cm/kg — não confundir
-   * com PESOBRUTO acima, que é o peso da venda, não do produto. */
+  /** CLIENTE_FORNECEDOR.NOME via IDCLIFORENTREGA/IDCLIFOR — de quem é
+   * este pedido, pra mostrar na tela sem precisar resolver em outro
+   * lugar. */
+  NOME_CLIENTE: string | null;
+  /** Dimensões/peso de catálogo (PRODUTO_GRADE), em cm/kg — peso por
+   * unidade da grade, precisa de × QTDPRODUTO pra virar peso de linha
+   * (ver PESOBRUTO acima). */
   LARGURA: number | null;
   ALTURA: number | null;
   COMPRIMENTO: number | null;
@@ -138,6 +148,7 @@ export interface ItemPreCargaFusion {
   VALTOTLIQUIDO: number | null;
   PESOBRUTO: number | null;
   DESCRCOMPRODUTO: string | null;
+  NOME_CLIENTE: string | null;
   LARGURA: number | null;
   ALTURA: number | null;
   COMPRIMENTO: number | null;

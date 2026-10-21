@@ -279,6 +279,25 @@ def test_codigo_carga_e_codigo_pedido():
     assert service.codigo_pedido(22094297, 22099141) == "22094297_22099141"
 
 
+def test_peso_item_usa_peso_de_movimento_quando_nao_zero():
+    assert service._peso_item({"PESOBRUTO": 0.5, "PRODUTO_PESOBRUTO": 2.0, "QTDPRODUTO": 6.0}) == 0.5
+
+
+def test_peso_item_cai_pro_catalogo_vezes_qtd_quando_movimento_e_zero():
+    """Achado em produção (carga 1_22142248): ESTOQUE_ANALITICO.PESOBRUTO
+    (o movimento) vem 0 em ~96% das linhas desta base — não é "produto
+    sem peso cadastrado" como a spec original assumiu. PRODUTO_GRADE
+    .PESOBRUTO é por unidade da grade, por isso × QTDPRODUTO — mesmo
+    tratamento que LARGURA/ALTURA/COMPRIMENTO (mesma tabela) já recebem
+    no cálculo de cubagem."""
+    item = {"PESOBRUTO": 0.0, "PRODUTO_PESOBRUTO": 2.0, "QTDPRODUTO": 6.0}
+    assert service._peso_item(item) == 12.0
+
+
+def test_peso_item_sem_fonte_nenhuma_e_zero():
+    assert service._peso_item({"PESOBRUTO": None, "PRODUTO_PESOBRUTO": None, "QTDPRODUTO": 4.0}) == 0
+
+
 DETALHE = {
     "IDEMPRESA": 3,
     "IDPLANILHA": 22099141,
@@ -326,7 +345,8 @@ def test_montar_payload_carga_monta_entrega_e_carga():
     assert payload_carga["cargas"][0]["codigo_erp"] == "3_22099141"
     assert payload_carga["cargas"][0]["codmotorista"] == "M-1"
     assert payload_carga["cargas"][0]["codveiculo"] == "V-1"
-    assert payload_carga["cargas"][0]["destino"] == "RECIFE/PE"
+    # Único cliente na carga (um só pedido) — nome anexado ao destino.
+    assert payload_carga["cargas"][0]["destino"] == "RECIFE/PE - FULANO"
 
     # entrega[] do saveCarga é um stub mínimo (D10) — não carrega valor/peso/cliente.
     # "612442" é o IDORCAMENTO real (não o IDPLANILHADOCORI=22083047,
@@ -422,6 +442,25 @@ def test_montar_payload_carga_agrupa_itens_do_mesmo_pedido_numa_so_entrega():
     assert len(entregas_servico[0]["itens"]) == 2
     assert entregas_servico[0]["valor"] == "740.010"
     assert entregas_servico[0]["peso"] == "1.500"
+
+
+def test_montar_payload_carga_nao_anexa_cliente_ao_destino_com_mais_de_um():
+    """Carga com pedidos de clientes diferentes — sem como escolher qual
+    nome mostrar, o destino fica só cidade/UF, sem o " - nome"."""
+    outro_cliente = {**CLIENTE, "CODIGO_CLIENTE": 99999, "RAZAO_CLIENTE": "OUTRO"}
+    item_outro_pedido = {
+        **ITEM,
+        "IDPLANILHADOCORI": 999998,
+        "IDORCAMENTO": 777777,
+        "IDCLIFORENTREGA": 99999,
+        "IDCLIFOR": 99999,
+        "NUMSEQUENCIA": 2,
+    }
+    payload_carga, _, _ = service.montar_payload_carga(
+        DETALHE, [ITEM, item_outro_pedido], {26623: CLIENTE, 99999: outro_cliente}, MOTORISTA, VEICULO
+    )
+
+    assert payload_carga["cargas"][0]["destino"] == "RECIFE/PE"
 
 
 def test_montar_payload_carga_calcula_cubagem_real_a_partir_das_dimensoes():
@@ -836,8 +875,9 @@ def test_montar_payload_pre_carga_usa_o_namespace_proprio():
     assert payload_carga["cargas"][0]["codigo_erp"] == "PC_2_796109"
     assert payload_carga["cargas"][0]["codmotorista"] == "M-1"
     assert payload_carga["cargas"][0]["codveiculo"] == "V-1"
-    # PRE_CARGA não tem UF/cidade — fato do schema, não lacuna.
-    assert payload_carga["cargas"][0]["destino"] == ""
+    # PRE_CARGA não tem UF/cidade (fato do schema) — mas com um único
+    # cliente no pedido, o destino vira só o nome, sem "" ou " - " solto.
+    assert payload_carga["cargas"][0]["destino"] == "FULANO"
     assert payload_carga["cargas"][0]["obs"] == "RECIFE CENTRO"
     assert payload_carga["entrega"][0]["pedido_erp"] == "614596_PC796109"
     assert entregas_servico[0]["pedido_erp"] == "614596_PC796109"
