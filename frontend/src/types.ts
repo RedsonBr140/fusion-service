@@ -14,9 +14,16 @@ export interface CargaResumo {
   IDPLANILHA: number;
   UF: string | null;
   DESCRCIDADE: string | null;
+  /** A transportadora, não quem dirigiu — na prática é quase sempre a
+   * mesma em toda carga, não serve pra distinguir uma da outra na
+   * listagem. Ver NOME_MOTORISTA. */
   NOMETRANSP: string | null;
   PLACATRANSP: string | null;
   IDMOTORISTA: number | null;
+  /** CLIENTE_FORNECEDOR.NOME via IDMOTORISTA, junção direta no CISS — não
+   * é o motorista lido ao vivo do Fusion (MotoristaFusion), só o nome
+   * pra exibir na listagem sem custar uma chamada ao portal por linha. */
+  NOME_MOTORISTA: string | null;
   FLAGCONFIRMADA: string | null;
   DTALTERACAO: string | null;
   DTCONFIRMACAO: string | null;

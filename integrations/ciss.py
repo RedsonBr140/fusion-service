@@ -176,8 +176,20 @@ class CissClient:
     _COLUNAS_CARGA = (
         "RP.IDEMPRESA, RP.IDPLANILHA, RP.IDUSUARIO, RP.UF, RP.IDCIDADE, "
         "CID.DESCRCIDADE, RP.IDTRANSPORTADOR, RP.CPFTRANSP, RP.NOMETRANSP, "
-        "RP.PLACATRANSP, RP.IDMOTORISTA, RP.DTMOVIMENTO, RP.DTCONFIRMACAO, "
+        "RP.PLACATRANSP, RP.IDMOTORISTA, CF_MOT.NOME AS NOME_MOTORISTA, "
+        "RP.DTMOVIMENTO, RP.DTCONFIRMACAO, "
         "RP.DTHORASAIDA, RP.DTALTERACAO, RP.FLAGCONFIRMADA"
+    )
+
+    # NOMETRANSP é a transportadora, não quem dirigiu — na prática é quase
+    # sempre a mesma (IDTRANSPORTADOR=1294 em toda amostra vista), então
+    # mostrar NOMETRANSP na listagem não diz nada útil pra distinguir uma
+    # carga da outra. O nome do motorista (CLIENTE_FORNECEDOR.NOME via
+    # IDMOTORISTA, mesmo IDCLIFOR que o resto do projeto já usa) é o dado
+    # que importa aqui — junção direto no CISS, sem precisar do portal do
+    # Fusion só pra listar.
+    _JOIN_MOTORISTA = (
+        "LEFT JOIN CLIENTE_FORNECEDOR CF_MOT ON CF_MOT.IDCLIFOR = RP.IDMOTORISTA "
     )
 
     _COLUNAS_PRE_CARGA = (
@@ -229,6 +241,7 @@ class CissClient:
             f"SELECT {self._COLUNAS_CARGA} "
             "FROM RETIRADA_PRODUTOS RP "
             "LEFT JOIN CIDADES_IBGE CID ON CID.IDCIDADE = RP.IDCIDADE "
+            f"{self._JOIN_MOTORISTA}"
             "WHERE RP.DTALTERACAO BETWEEN ? AND ? "
             f"{filtro_empresa}"
             "ORDER BY RP.DTALTERACAO DESC "
@@ -270,6 +283,7 @@ class CissClient:
             "CAST(RP.OBSERVACAO AS VARCHAR(300)) AS OBSERVACAO "
             "FROM RETIRADA_PRODUTOS RP "
             "LEFT JOIN CIDADES_IBGE CID ON CID.IDCIDADE = RP.IDCIDADE "
+            f"{self._JOIN_MOTORISTA}"
             "WHERE RP.IDEMPRESA = ? AND RP.IDPLANILHA = ?",
             (id_empresa, id_planilha),
         )

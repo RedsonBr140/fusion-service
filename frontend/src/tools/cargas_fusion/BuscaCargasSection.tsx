@@ -115,7 +115,10 @@ function linhaDeCarga(c: CargaResumo): LinhaCarga {
     idEmpresa: c.IDEMPRESA,
     idPlanilha: c.IDPLANILHA,
     codigo: `${c.IDEMPRESA}_${c.IDPLANILHA}`,
-    detalhe: `${c.NOMETRANSP ?? c.IDMOTORISTA ?? "—"} · ${c.PLACATRANSP ?? "sem placa"}`,
+    // Motorista, não a transportadora (NOMETRANSP) — a transportadora é
+    // quase sempre a mesma em toda carga, não ajuda a distinguir uma da
+    // outra na listagem.
+    detalhe: `${c.NOME_MOTORISTA ?? c.IDMOTORISTA ?? "—"} · ${c.PLACATRANSP ?? "sem placa"}`,
     data: c.DTALTERACAO,
     confirmada: c.FLAGCONFIRMADA === "T",
   };
