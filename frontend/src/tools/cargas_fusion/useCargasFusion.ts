@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
+  buscarCargaFusionPorDocumento,
   enviarCargaFusion,
   getCargaFusionPreview,
   getCargasFusion,
@@ -8,6 +9,12 @@ import {
   marcarCargaFusionIntegrada,
 } from "@/api";
 import type { SelecaoEnvioCargaFusion } from "@/types";
+
+export function useBuscarCargaPorDocumento() {
+  return useMutation({
+    mutationFn: (termo: string) => buscarCargaFusionPorDocumento(termo),
+  });
+}
 
 export function useBuscarCargas() {
   return useMutation({

@@ -380,6 +380,38 @@ def codigo_carga(id_empresa: int, id_planilha: int) -> str:
     return f"{id_empresa}_{id_planilha}"
 
 
+def localizar_carga_por_documento(client, termo: str) -> tuple[int, int] | None:
+    """Acha a carga a partir de um dos três jeitos de identificar ela:
+    o próprio código (`"{id_empresa}_{id_planilha}"`), o pedido real
+    (`IDORCAMENTO`) sozinho, ou a NF no formato `"numnota-serie"`. Tenta
+    cada formato pela marca que o distingue (`_`, `-`, só dígitos) — não
+    há ambiguidade real entre eles. `None` quando o termo não bate com
+    nenhum formato reconhecido, ou bate mas não acha carga nenhuma (os
+    três caminhos devolvem `None` nesse caso, nunca levantam)."""
+    termo = termo.strip()
+    if not termo:
+        return None
+
+    if "_" in termo:
+        id_empresa_str, _, id_planilha_str = termo.partition("_")
+        if id_empresa_str.isdigit() and id_planilha_str.isdigit():
+            id_empresa, id_planilha = int(id_empresa_str), int(id_planilha_str)
+            if client.get_carga_detalhe(id_empresa, id_planilha) is not None:
+                return id_empresa, id_planilha
+        return None
+
+    if "-" in termo:
+        numnota_str, _, serie = termo.partition("-")
+        if numnota_str.isdigit():
+            return client.get_carga_por_nota(int(numnota_str), serie.strip())
+        return None
+
+    if termo.isdigit():
+        return client.get_carga_por_pedido(int(termo))
+
+    return None
+
+
 def codigo_pedido(numero_pedido: int, id_planilha_carga: int) -> str:
     """Convenção fixada com o Redson (spec §4.2): o mesmo pedido em duas
     cargas diferentes (redespacho, p.ex.) vira dois `pedido_erp` distintos,

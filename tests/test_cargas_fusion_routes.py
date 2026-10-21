@@ -59,6 +59,8 @@ class CissClientFalso:
         detalhe_pre_carga=None,
         itens_pre_carga=(),
         origem_pre_cargas=None,
+        por_pedido=None,
+        por_nota=None,
     ):
         self._cargas = list(cargas)
         self._detalhe = detalhe
@@ -77,7 +79,19 @@ class CissClientFalso:
         # {} = nenhum pedido desta carga veio de pré-carga — comportamento
         # padrão (não exclui nada do envio).
         self._origem_pre_cargas = origem_pre_cargas or {}
+        self._por_pedido = por_pedido
+        self._por_nota = por_nota
         self.id_empresa_recebido = "não chamado"
+
+    def get_carga_por_pedido(self, numero_pedido):
+        if self._erro is not None:
+            raise self._erro
+        return self._por_pedido
+
+    def get_carga_por_nota(self, numnota, serienota):
+        if self._erro is not None:
+            raise self._erro
+        return self._por_nota
 
     def get_cargas(self, data_inicial, data_final, limite=100, id_empresa=None, apenas_fusion=True):
         if self._erro is not None:
@@ -740,6 +754,69 @@ def test_remover_da_fila_inexistente_devolve_404(client, config):
     resp = client.delete(f"{PREFIXO}/fila/999")
 
     assert resp.status_code == 404
+
+
+# --- /cargas/busca-documento -------------------------------------------------
+
+
+def test_buscar_carga_por_documento_sem_sessao_devolve_401(client):
+    resp = client.get(f"{PREFIXO}/cargas/busca-documento?termo=1_22144395")
+    assert resp.status_code == 401
+
+
+def test_buscar_carga_por_documento_sem_termo_devolve_400(client, config):
+    usuario_com_a_tool(client, config)
+
+    resp = client.get(f"{PREFIXO}/cargas/busca-documento")
+
+    assert resp.status_code == 400
+
+
+def test_buscar_carga_por_documento_pelo_codigo(client, app, config):
+    usuario_com_a_tool(client, config)
+    app.config["CISS_DB_CLIENT"] = CissClientFalso(detalhe={"IDEMPRESA": 1, "IDPLANILHA": 22144395})
+
+    resp = client.get(f"{PREFIXO}/cargas/busca-documento?termo=1_22144395")
+
+    assert resp.status_code == 200
+    assert resp.get_json() == {"id_empresa": 1, "id_planilha": 22144395}
+
+
+def test_buscar_carga_por_documento_pelo_pedido(client, app, config):
+    usuario_com_a_tool(client, config)
+    app.config["CISS_DB_CLIENT"] = CissClientFalso(por_pedido=(1, 22144395))
+
+    resp = client.get(f"{PREFIXO}/cargas/busca-documento?termo=616139")
+
+    assert resp.status_code == 200
+    assert resp.get_json() == {"id_empresa": 1, "id_planilha": 22144395}
+
+
+def test_buscar_carga_por_documento_pela_nf(client, app, config):
+    usuario_com_a_tool(client, config)
+    app.config["CISS_DB_CLIENT"] = CissClientFalso(por_nota=(1, 22144395))
+
+    resp = client.get(f"{PREFIXO}/cargas/busca-documento?termo=166105-2")
+
+    assert resp.status_code == 200
+    assert resp.get_json() == {"id_empresa": 1, "id_planilha": 22144395}
+
+
+def test_buscar_carga_por_documento_nao_encontrada_devolve_404(client, app, config):
+    usuario_com_a_tool(client, config)
+    app.config["CISS_DB_CLIENT"] = CissClientFalso()
+
+    resp = client.get(f"{PREFIXO}/cargas/busca-documento?termo=999999")
+
+    assert resp.status_code == 404
+
+
+def test_buscar_carga_por_documento_sem_ciss_configurado_devolve_503(client, config):
+    usuario_com_a_tool(client, config)
+
+    resp = client.get(f"{PREFIXO}/cargas/busca-documento?termo=616139")
+
+    assert resp.status_code == 503
 
 
 # --- /veiculos ---------------------------------------------------------------

@@ -137,6 +137,14 @@ export function getEmpresasCargasFusion(): Promise<{ empresas: EmpresaEstoque[] 
   return request("/api/empresas");
 }
 
+/** Acha a carga a partir do código ("1_22144395"), do pedido (IDORCAMENTO,
+ * ex. "616139") ou da NF ("166105-2") — qualquer um dos três. */
+export function buscarCargaFusionPorDocumento(
+  termo: string
+): Promise<{ id_empresa: number; id_planilha: number }> {
+  return request(`/api/cargas/busca-documento?termo=${encodeURIComponent(termo)}`);
+}
+
 export function getCargaFusionPreview(
   idEmpresa: number,
   idPlanilha: number,

@@ -279,6 +279,53 @@ def test_codigo_carga_e_codigo_pedido():
     assert service.codigo_pedido(22094297, 22099141) == "22094297_22099141"
 
 
+class CissClientDocumentoFalso:
+    """Dublê mínimo pra localizar_carga_por_documento — só os três
+    métodos que ela chama."""
+
+    def __init__(self, carga=None, por_pedido=None, por_nota=None):
+        self._carga = carga
+        self._por_pedido = por_pedido
+        self._por_nota = por_nota
+
+    def get_carga_detalhe(self, id_empresa, id_planilha):
+        return self._carga if (id_empresa, id_planilha) == self._carga else None
+
+    def get_carga_por_pedido(self, numero_pedido):
+        return self._por_pedido
+
+    def get_carga_por_nota(self, numnota, serienota):
+        return self._por_nota
+
+
+def test_localizar_carga_por_documento_pelo_codigo():
+    client = CissClientDocumentoFalso(carga=(1, 22144395))
+    assert service.localizar_carga_por_documento(client, "1_22144395") == (1, 22144395)
+
+
+def test_localizar_carga_por_documento_pelo_codigo_inexistente_devolve_none():
+    client = CissClientDocumentoFalso(carga=(1, 22144395))
+    assert service.localizar_carga_por_documento(client, "1_999999") is None
+
+
+def test_localizar_carga_por_documento_pelo_pedido():
+    client = CissClientDocumentoFalso(por_pedido=(1, 22144395))
+    assert service.localizar_carga_por_documento(client, "616139") == (1, 22144395)
+
+
+def test_localizar_carga_por_documento_pela_nf():
+    client = CissClientDocumentoFalso(por_nota=(1, 22144395))
+    assert service.localizar_carga_por_documento(client, "166105-2") == (1, 22144395)
+
+
+def test_localizar_carga_por_documento_termo_vazio_ou_nao_reconhecido():
+    client = CissClientDocumentoFalso()
+    assert service.localizar_carga_por_documento(client, "") is None
+    assert service.localizar_carga_por_documento(client, "   ") is None
+    assert service.localizar_carga_por_documento(client, "abc") is None
+    assert service.localizar_carga_por_documento(client, "1_abc") is None
+
+
 def test_peso_item_usa_peso_de_movimento_quando_nao_zero():
     assert service._peso_item({"PESOBRUTO": 0.5, "PRODUTO_PESOBRUTO": 2.0, "QTDPRODUTO": 6.0}) == 0.5
 

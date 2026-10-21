@@ -24,6 +24,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ApiError } from "@/api";
 import {
+  useBuscarCargaPorDocumento,
   useBuscarCargas,
   useCargaPreview,
   useEmpresasCargasFusion,
@@ -159,6 +160,7 @@ export function BuscaCargasSection({ cargaPreSelecionada }: Props) {
   const [ocultarEnviadas, setOcultarEnviadas] = useState(true);
   const [mostrarPreCargas, setMostrarPreCargas] = useState(true);
   const [apenasFusion, setApenasFusion] = useState(true);
+  const [termoDocumento, setTermoDocumento] = useState("");
   const [selecionada, setSelecionada] = useState<Selecionada | null>(
     cargaPreSelecionada ? { tipo: "carga", ...cargaPreSelecionada } : null
   );
@@ -184,6 +186,7 @@ export function BuscaCargasSection({ cargaPreSelecionada }: Props) {
 
   const busca = useBuscarCargas();
   const buscaPreCargas = useBuscarPreCargas();
+  const buscaDocumento = useBuscarCargaPorDocumento();
   const empresas = useEmpresasCargasFusion();
 
   const previewCarga = useCargaPreview(
@@ -232,12 +235,30 @@ export function BuscaCargasSection({ cargaPreSelecionada }: Props) {
   const erro =
     mensagemDeErro(busca.error) ??
     mensagemDeErro(buscaPreCargas.error) ??
+    mensagemDeErro(buscaDocumento.error) ??
     mensagemDeErro(previewCarga.error) ??
     mensagemDeErro(previewPreCarga.error) ??
     mensagemDeErro(enviar.error) ??
     mensagemDeErro(enviarPreCarga.error) ??
     mensagemDeErro(marcarIntegrada.error) ??
     mensagemDeErro(empresas.error);
+
+  function buscarPorDocumento() {
+    if (!termoDocumento.trim()) return;
+    enviar.reset();
+    enviarPreCarga.reset();
+    marcarIntegrada.reset();
+    buscaDocumento.mutate(termoDocumento.trim(), {
+      onSuccess: (resultado) => {
+        setMotoristaEscolhido(null);
+        setVeiculoEscolhido(null);
+        setItensSelecionados(null);
+        setConfirmarReenvio(false);
+        setCargaEnviada(null);
+        setSelecionada({ tipo: "carga", idEmpresa: resultado.id_empresa, idPlanilha: resultado.id_planilha });
+      },
+    });
+  }
 
   function buscar() {
     setSelecionada(null);
@@ -341,6 +362,34 @@ export function BuscaCargasSection({ cargaPreSelecionada }: Props) {
 
   return (
     <div className="flex flex-col gap-4">
+      <div className="flex flex-wrap items-end gap-3 rounded-md border border-border p-3">
+        <div className="flex flex-col gap-1">
+          <Label htmlFor="busca-documento">Buscar por código de carga, pedido ou NF</Label>
+          <Input
+            id="busca-documento"
+            value={termoDocumento}
+            onChange={(e) => setTermoDocumento(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && termoDocumento.trim()) {
+                e.preventDefault();
+                buscarPorDocumento();
+              }
+            }}
+            placeholder="1_22144395, 616139 ou 166105-2"
+            className="w-64"
+          />
+        </div>
+        <Button
+          type="button"
+          variant="secondary"
+          onClick={buscarPorDocumento}
+          disabled={!termoDocumento.trim() || buscaDocumento.isPending}
+        >
+          {buscaDocumento.isPending ? <LoaderCircle className="animate-spin" /> : <Search />}
+          Abrir carga
+        </Button>
+      </div>
+
       <div className="flex flex-wrap items-end gap-3">
         <div className="flex flex-col gap-1">
           <Label htmlFor="data-inicial">De</Label>

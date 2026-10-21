@@ -398,3 +398,39 @@ def test_get_cliente_fusion_filtra_por_idclifor_e_ativo(monkeypatch):
     assert "CF.IDCLIFOR = ?" in cursor.sql_executado
     assert "FLAGINATIVO = 'F'" in cursor.sql_executado
     assert cursor.params_recebidos == (777,)
+
+
+# --- busca de carga por documento (código/pedido/NF) ------------------
+
+
+def test_get_carga_por_pedido_filtra_por_idorcamento(monkeypatch):
+    montar_driver(
+        monkeypatch,
+        description=[("IDEMPRESA",), ("IDPLANILHA",)],
+        linhas=[(1, 22144395)],
+    )
+
+    assert CissClient(DB).get_carga_por_pedido(616139) == (1, 22144395)
+
+
+def test_get_carga_por_pedido_sem_resultado_devolve_none(monkeypatch):
+    montar_driver(monkeypatch, description=[("IDEMPRESA",), ("IDPLANILHA",)], linhas=[])
+
+    assert CissClient(DB).get_carga_por_pedido(999999) is None
+
+
+def test_get_carga_por_nota_filtra_por_numnota_e_serie(monkeypatch):
+    _, _, cursor = montar_driver(
+        monkeypatch,
+        description=[("IDEMPRESA",), ("IDPLANILHA",)],
+        linhas=[(1, 22144395)],
+    )
+
+    assert CissClient(DB).get_carga_por_nota(166105, "2") == (1, 22144395)
+    assert cursor.params_recebidos == (166105, "2")
+
+
+def test_get_carga_por_nota_sem_resultado_devolve_none(monkeypatch):
+    montar_driver(monkeypatch, description=[("IDEMPRESA",), ("IDPLANILHA",)], linhas=[])
+
+    assert CissClient(DB).get_carga_por_nota(1, "9") is None

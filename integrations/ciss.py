@@ -316,6 +316,43 @@ class CissClient:
             (id_empresa, id_planilha),
         )
 
+    def get_carga_por_pedido(self, numero_pedido: int) -> tuple[int, int] | None:
+        """A carga que carrega este pedido (`IDORCAMENTO` real, não
+        `IDPLANILHADOCORI` — a pré-nota, ver D11 em `get_itens_carga`) —
+        mesma cadeia de junção via `ORCAMENTO_PRE_NOTA`. Um pedido pode
+        reaparecer em mais de uma carga histórica (redespacho) — devolve a
+        mais recente por `DTALTERACAO`."""
+        linha = self._fetch_one(
+            "SELECT PR.IDEMPRESA, PR.IDPLANILHA "
+            "FROM PRODUTO_RETIRADO PR "
+            "JOIN ORCAMENTO_PRE_NOTA OPN "
+            "  ON OPN.IDEMPRESAPRENOTA = PR.IDEMPRESA AND OPN.IDPLANILHAPRENOTA = PR.IDPLANILHADOCORI "
+            "JOIN RETIRADA_PRODUTOS RP ON RP.IDEMPRESA = PR.IDEMPRESA AND RP.IDPLANILHA = PR.IDPLANILHA "
+            "WHERE OPN.IDORCAMENTO = ? "
+            "ORDER BY RP.DTALTERACAO DESC "
+            "FETCH FIRST 1 ROWS ONLY",
+            (numero_pedido,),
+        )
+        return (linha["IDEMPRESA"], linha["IDPLANILHA"]) if linha else None
+
+    def get_carga_por_nota(self, numnota: int, serienota: str) -> tuple[int, int] | None:
+        """A carga que carrega esta NF real — mesma cadeia de junção via
+        `PRODUTO_RETIRADO_NOTAS`/`NOTAS` que `get_itens_carga` usa (D11:
+        não é a mesma coisa que `IDPLANILHADOCORI`)."""
+        linha = self._fetch_one(
+            "SELECT PR.IDEMPRESA, PR.IDPLANILHA "
+            "FROM PRODUTO_RETIRADO PR "
+            "JOIN PRODUTO_RETIRADO_NOTAS PRN "
+            "  ON PRN.IDEMPRESA = PR.IDEMPRESA AND PRN.IDPLANILHA = PR.IDPLANILHA "
+            " AND PRN.IDPRODUTO = PR.IDPRODUTO AND PRN.IDSUBPRODUTO = PR.IDSUBPRODUTO "
+            " AND PRN.NUMSEQUENCIA = PR.NUMSEQUENCIA "
+            "JOIN NOTAS N ON N.IDPLANILHA = PRN.IDPLANILHANOTA AND N.IDEMPRESA = PRN.IDEMPRESANOTA "
+            "WHERE N.NUMNOTA = ? AND N.SERIENOTA = ? "
+            "FETCH FIRST 1 ROWS ONLY",
+            (numnota, serienota),
+        )
+        return (linha["IDEMPRESA"], linha["IDPLANILHA"]) if linha else None
+
     def get_itens_carga(self, id_empresa: int, id_planilha: int) -> list[dict[str, object]]:
         """Os itens da carga, com o pedido de origem, a NF real, o valor/
         peso da linha, e a descrição/dimensões do produto. Ver o arquivo

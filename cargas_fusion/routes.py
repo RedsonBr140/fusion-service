@@ -208,6 +208,29 @@ def buscar_cargas():
     return jsonify({"cargas": cargas}), 200
 
 
+@bp.get("/cargas/busca-documento")
+@login_required
+def buscar_carga_por_documento():
+    termo = (request.args.get("termo") or "").strip()
+    if not termo:
+        return jsonify({"error": "Informe o código da carga, o pedido ou a NF."}), 400
+
+    client = _ciss_client()
+    if client is None:
+        return jsonify({"error": MSG_CISS_NAO_CONFIGURADO}), 503
+
+    try:
+        resultado = service.localizar_carga_por_documento(client, termo)
+    except CissDbError:
+        return jsonify({"error": MSG_CISS_INDISPONIVEL}), 503
+
+    if resultado is None:
+        return jsonify({"error": "Nenhuma carga encontrada para esse código, pedido ou NF."}), 404
+
+    id_empresa, id_planilha = resultado
+    return jsonify({"id_empresa": id_empresa, "id_planilha": id_planilha}), 200
+
+
 @bp.get("/empresas")
 @login_required
 def listar_empresas():

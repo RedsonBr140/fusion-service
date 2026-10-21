@@ -390,6 +390,23 @@ de timestamp ambígua (sem offset nem `Z`) chegar ao frontend, porque
 local do navegador", e cada fonte deste projeto mente sobre isso de um
 jeito diferente.
 
+## Busca de carga por documento (código, pedido ou NF)
+
+`GET /api/cargas/busca-documento?termo=...` acha a carga a partir de
+qualquer um dos três jeitos de identificar ela, sem precisar saber o
+período/empresa pra buscar na lista: o código (`"1_22144395"`), o pedido
+real — `IDORCAMENTO`, não `IDPLANILHADOCORI` (D11) — sozinho (`"616139"`),
+ou a NF real no formato `"numnota-serie"` (`"166105-2"`).
+`cargas_fusion/service.py::localizar_carga_por_documento` escolhe o
+formato pela marca que o distingue (`_`, `-`, só dígitos) — sem
+ambiguidade real entre os três. `integrations/ciss.py::get_carga_por_pedido`/
+`get_carga_por_nota` reusam a mesma cadeia de junção que
+`get_itens_carga` já usa pra resolver pedido/NF reais (D11) — nunca
+`IDPLANILHADOCORI` direto. Esta busca **não aplica** o filtro de
+`FLAGUTILIZAINTEGRACAOFUSION` (acima) — acha a carga mesmo que o local de
+retirada não tenha a integração marcada, porque quem está buscando já
+sabe o documento específico que quer.
+
 ## Pendências de dado conhecidas
 
 - `preco`/`subtotal` dos itens de `saveEntregaServico`: `subtotal` vem de
