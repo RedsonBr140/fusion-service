@@ -1,12 +1,7 @@
 """Tokens assinados (HMAC-SHA256), sem estado no servidor.
 
-Dois usos do mesmo formato, com segredos diferentes:
-- sessão própria deste serviço (`criar_token`/`verificar`, assinado com
-  `Config.secret_key`), validade ~12h;
-- token de troca emitido pelo meta-natal (`verificar` com
-  `Config.fusion_token_secret`), validade ~5min — este serviço só
-  verifica, nunca emite esse.
-
+Sessão própria deste serviço (`criar_token_sessao`/`verificar`, assinada
+com `Config.secret_key`), validade ~12h — único token que existe aqui.
 Formato: "<payload_b64url>.<hex_hmac_sha256>". `payload` é um JSON com,
 no mínimo, `exp` (timestamp unix).
 """

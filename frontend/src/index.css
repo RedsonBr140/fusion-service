@@ -1,0 +1,94 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:is(.dark *));
+
+/* Tokens copiados de meta-natal/frontend/src/index.css (commit 0cea91e) —
+   só os usados pelos componentes desta tool (button, input, label, card,
+   dialog). Mesmos valores, pra ficar visualmente igual ao resto do
+   Toolkit mesmo fora dele. */
+@theme inline {
+    --color-destructive-text: var(--destructive-text);
+    --font-sans: Sora, ui-sans-serif, sans-serif, system-ui;
+    --font-mono: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+    --radius: 0.5rem;
+    --shadow-xs: var(--shadow-xs);
+    --shadow-sm: var(--shadow-sm);
+    --shadow-lg: var(--shadow-lg);
+    --color-ring: var(--ring);
+    --color-input: var(--input);
+    --color-border: var(--border);
+    --color-destructive-foreground: var(--destructive-foreground);
+    --color-destructive: var(--destructive);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-accent: var(--accent);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-muted: var(--muted);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-secondary: var(--secondary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-primary: var(--primary);
+    --color-card-foreground: var(--card-foreground);
+    --color-card: var(--card);
+    --color-foreground: var(--foreground);
+    --color-background: var(--background);
+}
+
+:root {
+    --destructive-text: oklch(0.4550 0.1780 27.5000);
+
+    --background: oklch(0.9850 0.0051 145.5371);
+    --foreground: oklch(0.1894 0.0247 156.1253);
+    --card: oklch(1.0000 0 0);
+    --card-foreground: oklch(0.1894 0.0247 156.1253);
+    --primary: oklch(0.3111 0.0867 149.5143);
+    --primary-foreground: oklch(0.9850 0.0051 145.5371);
+    --secondary: oklch(0.9494 0.0184 150.5538);
+    --secondary-foreground: oklch(0.2748 0.0692 154.0651);
+    --muted: oklch(0.9552 0.0092 150.6889);
+    --muted-foreground: oklch(0.4993 0.0234 149.7412);
+    --accent: oklch(0.9516 0.0314 62.8315);
+    --accent-foreground: oklch(0.3514 0.1020 44.1209);
+    --destructive: oklch(0.5707 0.2055 26.9745);
+    --destructive-foreground: oklch(0.9850 0.0051 145.5371);
+    --border: oklch(0.9009 0.0186 150.5355);
+    --input: oklch(0.9009 0.0186 150.5355);
+    --ring: oklch(0.3111 0.0867 149.5143);
+    --shadow-xs: 0px 4px 8px -2px hsl(157.3913 100.0000% 13.5294% / 0.03);
+    --shadow-sm: 0px 4px 8px -2px hsl(157.3913 100.0000% 13.5294% / 0.06), 0px 1px 2px -3px hsl(157.3913 100.0000% 13.5294% / 0.06);
+    --shadow-lg: 0px 4px 8px -2px hsl(157.3913 100.0000% 13.5294% / 0.06), 0px 4px 6px -3px hsl(157.3913 100.0000% 13.5294% / 0.06);
+}
+
+.dark {
+    --destructive-text: oklch(0.7300 0.1600 27.8000);
+
+    --background: oklch(0.1441 0.0341 157.2788);
+    --foreground: oklch(0.9502 0.0126 149.2464);
+    --card: oklch(0.1857 0.0404 156.1615);
+    --card-foreground: oklch(0.9502 0.0126 149.2464);
+    --primary: oklch(0.7613 0.1455 153.9899);
+    --primary-foreground: oklch(0.1614 0.0362 155.9381);
+    --secondary: oklch(0.2463 0.0452 155.0412);
+    --secondary-foreground: oklch(0.9303 0.0151 151.7610);
+    --muted: oklch(0.2367 0.0400 155.0569);
+    --muted-foreground: oklch(0.6998 0.0252 149.2282);
+    --accent: oklch(0.6994 0.1754 51.7911);
+    --accent-foreground: oklch(0.1498 0.0287 43.4123);
+    --destructive: oklch(0.6889 0.1748 27.8332);
+    --destructive-foreground: oklch(0.9850 0.0051 145.5371);
+    --border: oklch(0.2986 0.0437 155.6201);
+    --input: oklch(0.2986 0.0437 155.6201);
+    --ring: oklch(0.7613 0.1455 153.9899);
+    --shadow-xs: 0px 4px 10px -3px hsl(0 0% 0% / 0.10);
+    --shadow-sm: 0px 4px 10px -3px hsl(0 0% 0% / 0.20), 0px 1px 2px -4px hsl(0 0% 0% / 0.20);
+    --shadow-lg: 0px 4px 10px -3px hsl(0 0% 0% / 0.20), 0px 4px 6px -4px hsl(0 0% 0% / 0.20);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+  }
+}

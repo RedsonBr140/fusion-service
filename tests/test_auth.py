@@ -1,8 +1,6 @@
-"""Login direto (allow-list antes do CISS) e troca de token do meta-natal."""
+"""Login direto (allow-list antes do CISS) — único caminho de entrada."""
 
 from __future__ import annotations
-
-import time
 
 import pytest
 
@@ -109,67 +107,6 @@ def test_login_bem_sucedido_devolve_token_e_usuario(app, config):
 
 def test_login_route_sem_credenciais_devolve_401(client):
     resp = client.post("/api/login", json={})
-    assert resp.status_code == 401
-
-
-# --- Troca de token (meta-natal -> fusion-service) ---------------------
-
-
-def _token_meta_natal(config, *, ciss_code="42", name="Fulano", exp=None, secret=None):
-    claims = {
-        "ciss_code": ciss_code,
-        "name": name,
-        "exp": exp if exp is not None else time.time() + 300,
-    }
-    return tokens.emitir(claims, secret or config.fusion_token_secret)
-
-
-def test_exchange_token_valido_e_na_allowlist_emite_sessao(app, config):
-    criar_usuario_local(config, ciss_code="42", name="Fulano")
-    token = _token_meta_natal(config)
-
-    with app.app_context():
-        from auth import service
-
-        resultado = service.exchange(token)
-
-    assert resultado["user"] == {"ciss_code": "42", "name": "Fulano"}
-
-
-def test_exchange_token_expirado_e_rejeitado(app, config):
-    criar_usuario_local(config, ciss_code="42")
-    token = _token_meta_natal(config, exp=time.time() - 1)
-
-    with app.app_context():
-        from auth import service
-
-        with pytest.raises(service.ExchangeRejected):
-            service.exchange(token)
-
-
-def test_exchange_token_com_assinatura_adulterada_e_rejeitado(app, config):
-    criar_usuario_local(config, ciss_code="42")
-    token = _token_meta_natal(config, secret="segredo-errado")
-
-    with app.app_context():
-        from auth import service
-
-        with pytest.raises(service.ExchangeRejected):
-            service.exchange(token)
-
-
-def test_exchange_ciss_code_fora_da_allowlist_e_rejeitado(app, config):
-    token = _token_meta_natal(config, ciss_code="nao-cadastrado")
-
-    with app.app_context():
-        from auth import service
-
-        with pytest.raises(service.ExchangeRejected):
-            service.exchange(token)
-
-
-def test_exchange_route_devolve_401_para_token_invalido(client):
-    resp = client.post("/api/token/exchange", json={"token": "lixo"})
     assert resp.status_code == 401
 
 

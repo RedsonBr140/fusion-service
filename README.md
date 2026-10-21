@@ -1,21 +1,22 @@
 # fusion-service
 
-Integração com o Fusion DMS (SOAP + portal web) e as leituras de CISS DB2
-que ela precisa — extraída do meta-natal para ser um serviço próprio, com
-host, banco e deploy independentes. Nenhum código daqui depende do
-meta-natal estar no ar; a relação entre os dois é só uma troca de token
-opcional (ver "Autenticação").
-
-A tool **Cargas Fusion** continua listada no Toolkit do meta-natal — isso
-não mudou. O que mudou é que, ao entrar na página, o frontend passa a
-falar direto com este serviço.
+Cargas Fusion — busca de carga no CISSPoder e integração ao Fusion DMS
+(webservice SOAP + portal web). Era uma tool do Toolkit (meta-natal); hoje
+é um app standalone: seu próprio frontend, backend, banco e deploy, sem
+nenhum acoplamento com o meta-natal — nem token compartilhado, nem CORS,
+nem link de volta. Login direto (allow-list local + CISS) é a única porta
+de entrada.
 
 ## Stack
 
-Flask + `sqlite3` nativo (sem ORM, sem migrations automáticas — `schema.sql`
-+ `_migrar()` em `database.py`, mesmo padrão do meta-natal). Python 3.14.
+Monolito: Flask serve a API e, em produção, o próprio frontend buildado —
+um processo, uma origem, sem nginx na frente. `sqlite3` nativo (sem ORM,
+sem migrations automáticas — `schema.sql` + `_migrar()` em `database.py`).
+Frontend em React + Vite + TypeScript + Tailwind. Python 3.14.
 
 ## Subindo localmente
+
+**Backend:**
 
 ```bash
 python -m venv .venv
@@ -24,7 +25,19 @@ cp .env.example .env   # preencher as credenciais, ver abaixo
 .venv/bin/python -c "from app import create_app; create_app().run(port=5050)"
 ```
 
-Testes:
+**Frontend** (outro terminal, dev):
+
+```bash
+cd frontend
+npm install
+npm run dev   # :5173, com proxy de /api para :5050 (vite.config.ts)
+```
+
+**Produção:** `cd frontend && npm run build` gera `frontend/dist/`, que o
+próprio Flask passa a servir (rota catch-all em `app.py`) — só precisa
+rodar o backend depois disso, sem processo de frontend separado.
+
+Testes do backend:
 
 ```bash
 .venv/bin/python -m pytest -q
@@ -34,58 +47,34 @@ Testes:
 
 Tudo documentado em `.env.example`. Os grupos que importam:
 
-- `SECRET_KEY` — assina as sessões próprias deste serviço (12h de validade).
-- `FUSION_TOKEN_SECRET` — **precisa ter o mesmo valor** do `.env` do
-  meta-natal (lá, também `FUSION_TOKEN_SECRET`). É o segredo compartilhado
-  que permite validar o token de troca que o meta-natal emite em
-  `POST /api/tools/cargas-fusion/token`. Esse é o único acoplamento entre
-  os dois projetos — um valor, não um import, não uma tabela.
+- `SECRET_KEY` — assina as sessões deste serviço (validade ~12h).
 - `CISS_DB_*` (DRIVER/HOST/NAME/USER/PASSWORD/PORT/TIMEOUT) — leitura do
   CISS DB2 via ODBC, somente `SELECT` (guarda em
-  `integrations/ciss.py::validate_readonly_query`, aplicada
-  independentemente da mesma guarda no meta-natal). Todas obrigatórias, ou
+  `integrations/ciss.py::validate_readonly_query`). Todas obrigatórias, ou
   nenhuma.
-- `CISS_API_URL` / `CISS_CA_BUNDLE` — autenticação CISS (login direto,
-  fallback).
+- `CISS_API_URL` / `CISS_CA_BUNDLE` — autenticação CISS (o login desta
+  app).
 - `FUSION_API_URL/LOGIN/SENHA` — webservice SOAP do Fusion (`saveCarga` e
   companhia). Todas ou nenhuma.
 - `FUSION_PORTAL_URL/LOGIN/SENHA` — portal web do Fusion (busca de
   motorista, `fusion-py`). Todas ou nenhuma.
-- `ALLOWED_ORIGINS` — origens do frontend liberadas por CORS (separadas
-  por vírgula).
 - `DATABASE_PATH`, `PORT`.
 
 Qualquer grupo "todas ou nenhuma" ausente faz o recurso correspondente
 rodar desligado (ex.: sem `FUSION_API_URL/LOGIN/SENHA`, envio ao Fusion
-fica indisponível, mas o resto do serviço sobe normalmente) — mesma
-convenção do meta-natal.
+fica indisponível, mas o resto do serviço sobe normalmente).
 
 ## Autenticação
 
-Dois caminhos para chegar numa sessão deste serviço — nenhum dos dois
-depende de cookie, só de `Authorization: Bearer <token>`:
+Único caminho: `POST /api/login` com `{username, password}` — a allow-list
+local (`usuarios_locais`) é consultada **antes** de qualquer chamada ao
+CISS (usuário fora dela nunca gera tráfego pro CISS). Autentica contra o
+CISS e devolve uma sessão de ~12h como `Authorization: Bearer <token>` —
+sem cookie, token guardado em memória no frontend (perdido ao recarregar a
+aba, por isso é preciso logar de novo).
 
-**1. Troca de token (caminho rápido, com o meta-natal no ar)**
-
-1. O frontend, já logado no meta-natal, pede
-   `POST /api/tools/cargas-fusion/token` (lá, atrás do `login_required` +
-   `tool_required("cargas_fusion")` de sempre) e recebe um token assinado
-   de vida curta (~5 min, claims `ciss_code`/`name`/`exp`).
-2. Troca esse token aqui: `POST /api/token/exchange` — valida a
-   assinatura com `FUSION_TOKEN_SECRET`, confere o `ciss_code` contra a
-   allow-list local (`usuarios_locais`) e, se ativo, devolve uma sessão
-   própria deste serviço (~12h).
-
-**2. Login direto (fallback, meta-natal fora do ar)**
-
-`POST /api/login` com `{username, password}` — a allow-list local é
-consultada **antes** de qualquer chamada ao CISS (mesma ordem do
-meta-natal: usuário fora da allow-list nunca gera tráfego pro CISS).
-Autentica contra o CISS normalmente e devolve a mesma sessão de 12h.
-
-**Allow-list (`usuarios_locais`)** — mantida manualmente, de propósito não
-sincronizada de `user_tools` do meta-natal (sincronizar recriaria a
-dependência que esta separação existe para remover):
+**Allow-list (`usuarios_locais`)** — mantida manualmente, um grupo
+pequeno:
 
 ```
 POST /api/usuarios   {username, ciss_code, name}   — concede ou reativa
@@ -93,12 +82,11 @@ GET  /api/usuarios                                  — lista quem tem acesso
 ```
 
 Ambas atrás de `login_required` — qualquer pessoa já com acesso pode
-conceder a outra. Grupo pequeno, cuidado manual mesmo.
+conceder a outra.
 
 ## Rotas de negócio
 
-Todas atrás de `Authorization: Bearer <token>`, mesma forma/payload de
-quando viviam no meta-natal, só sem o prefixo `/tools/cargas-fusion`:
+Todas atrás de `Authorization: Bearer <token>`:
 
 ```
 GET    /api/cargas
@@ -134,7 +122,7 @@ POST   /api/ajudantes/<id>/sincronizar
 ## Estrutura
 
 ```
-app.py                  create_app() — monta clients, CORS, blueprints
+app.py                  create_app() — monta clients, blueprints, serve frontend/dist/ em produção
 config.py                Config (dataclass) + loaders por grupo de env var
 database.py / schema.sql get_db(), migração idempotente
 integrations/
@@ -143,15 +131,20 @@ integrations/
   fusion.py                webservice SOAP (saveCarga, sendVeiculos, ...)
   fusion_portal.py         portal web (busca/sugestão de motorista)
 auth/
-  tokens.py               esquema HMAC comum (token de troca e de sessão)
-  service.py               login, troca, allow-list
+  tokens.py               esquema de token de sessão (HMAC, sem estado)
+  service.py               login, allow-list
   decorators.py             login_required via Bearer
-  routes.py                 /login, /token/exchange, /me, /logout, /usuarios
+  routes.py                 /login, /me, /logout, /usuarios
 cargas_fusion/
   service.py                lógica de negócio (sem dependência de CISS)
   routes.py                  rotas HTTP, usa os clients acima
 scripts/
   migrar_de_meta_natal.py    migração única das 5 tabelas, roda no corte
+frontend/
+  src/api.ts                 toda chamada HTTP, token em memória
+  src/types.ts                tipos portados de meta-natal/frontend/src/types/index.ts (commit 0cea91e)
+  src/components/ui/          primitivas (button, input, label, card, dialog) — mesmo visual do Toolkit
+  src/tools/cargas_fusion/    as telas e hooks da tool, como estavam no meta-natal
 ```
 
 ## Migração única (corte do meta-natal)
@@ -174,8 +167,8 @@ reaproveitar código, por reaproveitar o princípio):
 
 - **CISS DB2 é somente leitura.** ODBC com `pyodbc`, só `SELECT`,
   guardado em `validate_readonly_query`.
-- **A allow-list local é consultada antes do CISS**, nos dois caminhos de
-  login (direto e troca). Usuário fora dela nunca gera tráfego pro CISS.
+- **A allow-list local é consultada antes do CISS.** Usuário fora dela
+  nunca gera tráfego pro CISS.
 - **Nenhum log registra senha, token ou header `Authorization`.**
 - **Sem ORM, sem SQLAlchemy, sem migrations.** `sqlite3` nativo,
   queries parametrizadas.

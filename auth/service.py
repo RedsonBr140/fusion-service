@@ -1,7 +1,7 @@
-"""Login direto (fallback se o meta-natal estiver fora do ar) e troca de
-token (caminho rápido, quando o meta-natal está no ar).
+"""Login direto — único caminho de entrada deste serviço, independente do
+meta-natal em todo request (Cargas Fusion não é mais uma tool do Toolkit).
 
-Mesma ordem obrigatória do meta-natal (core/auth/service.py): a allow-list
+Mesma ordem herdada do meta-natal (core/auth/service.py): a allow-list
 local é consultada antes de qualquer contato com o CISS — usuário não
 cadastrado aqui não gera tráfego para o CISS.
 """
@@ -21,7 +21,6 @@ logger = logging.getLogger(__name__)
 
 GENERIC_ERROR = "Usuário ou senha inválidos."
 UNAVAILABLE_ERROR = "Serviço de autenticação indisponível. Tente novamente."
-EXCHANGE_ERROR = "Token inválido, expirado, ou usuário sem acesso a este serviço."
 
 
 class LoginRejected(Exception):
@@ -30,10 +29,6 @@ class LoginRejected(Exception):
 
 class AuthUnavailable(Exception):
     """O CISS não pôde ser consultado."""
-
-
-class ExchangeRejected(Exception):
-    """Token de troca inválido, expirado, ou ciss_code fora da allow-list."""
 
 
 def _public_user(ciss_code: str | None, name: str) -> dict:
@@ -90,35 +85,6 @@ def login(username: str, password: str, *, authenticate=None) -> dict:
         ciss_code=row["ciss_code"], name=row["name"], secret=config.secret_key
     )
     logger.info("Login concluído: %s", normalized)
-    return {"token": token, "user": _public_user(row["ciss_code"], row["name"])}
-
-
-def exchange(token_meta_natal: str) -> dict:
-    """Troca o token de vida curta emitido pelo meta-natal por uma sessão
-    deste serviço. Exige que o `ciss_code` do token esteja na allow-list
-    local e ativo — o meta-natal já checou `tool_required`, mas este
-    serviço não confia nisso sem conferir a própria allow-list."""
-    config = current_app.config["APP_CONFIG"]
-
-    try:
-        claims = tokens.verificar(token_meta_natal, config.fusion_token_secret)
-    except tokens.TokenInvalido:
-        raise ExchangeRejected from None
-
-    ciss_code = claims.get("ciss_code")
-    if ciss_code is None:
-        raise ExchangeRejected
-
-    row = get_db().execute(
-        "SELECT ciss_code, name, active FROM usuarios_locais WHERE ciss_code = ?",
-        (str(ciss_code),),
-    ).fetchone()
-    if row is None or row["active"] != 1:
-        raise ExchangeRejected
-
-    token = tokens.criar_token_sessao(
-        ciss_code=row["ciss_code"], name=row["name"], secret=config.secret_key
-    )
     return {"token": token, "user": _public_user(row["ciss_code"], row["name"])}
 
 

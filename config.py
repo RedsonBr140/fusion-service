@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -99,19 +99,12 @@ class Config:
     secret_key: str
     """Assina os tokens de sessão deste serviço (`auth/tokens.py`)."""
 
-    fusion_token_secret: str
-    """Segredo compartilhado com o meta-natal, para verificar o token de
-    troca que ele emite em `POST /api/tools/cargas-fusion/token`. Valor
-    igual nos dois `.env`s — é a única coisa que os dois serviços
-    compartilham."""
-
     ciss_api_url: str
     ciss_ca_bundle: str | None
     ciss_db: CissDbConfig | None
     fusion: FusionConfig | None
     fusion_portal: FusionPortalConfig | None
 
-    allowed_origins: tuple[str, ...] = field(default_factory=tuple)
     database_path: str = "fusion_service.db"
     port: int = 5050
 
@@ -195,11 +188,6 @@ def _load_fusion_portal(env: Mapping[str, str]) -> FusionPortalConfig | None:
     )
 
 
-def _load_allowed_origins(env: Mapping[str, str]) -> tuple[str, ...]:
-    bruto = env.get("ALLOWED_ORIGINS") or "http://localhost:5173"
-    return tuple(origem.strip() for origem in bruto.split(",") if origem.strip())
-
-
 def load_config(env: Mapping[str, str] | None = None) -> Config:
     if env is None:
         load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -207,13 +195,11 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
 
     return Config(
         secret_key=_required(env, "SECRET_KEY"),
-        fusion_token_secret=_required(env, "FUSION_TOKEN_SECRET"),
         ciss_api_url=_required(env, "CISS_API_URL").rstrip("/"),
         ciss_ca_bundle=_optional(env, "CISS_CA_BUNDLE"),
         ciss_db=_load_ciss_db(env),
         fusion=_load_fusion(env),
         fusion_portal=_load_fusion_portal(env),
-        allowed_origins=_load_allowed_origins(env),
         database_path=(env.get("DATABASE_PATH") or "fusion_service.db"),
         port=int(env.get("PORT") or 5050),
     )

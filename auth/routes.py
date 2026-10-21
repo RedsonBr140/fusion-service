@@ -28,21 +28,6 @@ def login():
     return jsonify(resultado), 200
 
 
-@bp.post("/token/exchange")
-def exchange():
-    corpo = request.get_json(silent=True) or {}
-    token = corpo.get("token") or ""
-    if not token:
-        return jsonify({"error": service.EXCHANGE_ERROR}), 401
-
-    try:
-        resultado = service.exchange(token)
-    except service.ExchangeRejected:
-        return jsonify({"error": service.EXCHANGE_ERROR}), 401
-
-    return jsonify(resultado), 200
-
-
 @bp.get("/me")
 @login_required
 def me():
