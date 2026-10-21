@@ -120,3 +120,39 @@ def exchange(token_meta_natal: str) -> dict:
         ciss_code=row["ciss_code"], name=row["name"], secret=config.secret_key
     )
     return {"token": token, "user": _public_user(row["ciss_code"], row["name"])}
+
+
+def _usuario_publico(row) -> dict:
+    return {
+        "username": row["username"],
+        "ciss_code": row["ciss_code"],
+        "name": row["name"],
+        "active": bool(row["active"]),
+    }
+
+
+def listar_usuarios() -> list[dict]:
+    rows = get_db().execute(
+        "SELECT username, ciss_code, name, active FROM usuarios_locais ORDER BY username"
+    ).fetchall()
+    return [_usuario_publico(row) for row in rows]
+
+
+def conceder(username: str, ciss_code: str, name: str) -> dict:
+    """Adiciona alguém na allow-list local, ou reativa quem já estava lá
+    com dado novo. Não confere `user_tools` do meta-natal de propósito —
+    ver docstring do módulo: essa allow-list é a própria fonte, mantida
+    manualmente. Levanta `sqlite3.IntegrityError` se `ciss_code` já
+    pertence a outro `username`."""
+    normalized = username.strip().lower()
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO usuarios_locais (username, ciss_code, name, active) "
+        "VALUES (?, ?, ?, 1) "
+        "ON CONFLICT(username) DO UPDATE SET "
+        "ciss_code = excluded.ciss_code, name = excluded.name, active = 1",
+        (normalized, str(ciss_code).strip(), name.strip()),
+    )
+    conn.commit()
+    logger.info("Allow-list: %s concedido/reativado", normalized)
+    return _usuario_publico(_buscar_usuario_local(normalized))

@@ -186,3 +186,79 @@ def test_me_com_token_valido_devolve_usuario(client, config):
     resp = client.get("/api/me", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 200
     assert resp.get_json()["user"] == {"ciss_code": "42", "name": "Fulano"}
+
+
+# --- Allow-list (conceder/listar usuarios_locais) -----------------------
+
+
+def _auth_header(config, *, ciss_code="42", name="Quem Concede"):
+    token = tokens.criar_token_sessao(ciss_code=ciss_code, name=name, secret=config.secret_key)
+    return {"Authorization": f"Bearer {token}"}
+
+
+def test_conceder_usuario_sem_token_devolve_401(client):
+    resp = client.post("/api/usuarios", json={"username": "novo", "ciss_code": "7", "name": "Novo"})
+    assert resp.status_code == 401
+
+
+def test_conceder_usuario_sem_campos_obrigatorios_devolve_400(client, config):
+    resp = client.post("/api/usuarios", json={"username": "novo"}, headers=_auth_header(config))
+    assert resp.status_code == 400
+
+
+def test_conceder_usuario_novo_entra_na_allowlist_e_pode_logar(app, client, config):
+    resp = client.post(
+        "/api/usuarios",
+        json={"username": "novo", "ciss_code": "7", "name": "Pessoa Nova"},
+        headers=_auth_header(config),
+    )
+    assert resp.status_code == 201
+    assert resp.get_json()["usuario"] == {
+        "username": "novo",
+        "ciss_code": "7",
+        "name": "Pessoa Nova",
+        "active": True,
+    }
+
+    with app.app_context():
+        from auth import service
+
+        resultado = service.login("7", "qualquer", authenticate=_autenticar_ok)
+    assert resultado["user"] == {"ciss_code": "7", "name": "Pessoa Nova"}
+
+
+def test_conceder_usuario_existente_reativa_e_atualiza_dados(client, config):
+    criar_usuario_local(config, ciss_code="8", name="Nome Antigo", active=0)
+
+    resp = client.post(
+        "/api/usuarios",
+        json={"username": "8", "ciss_code": "8", "name": "Nome Novo"},
+        headers=_auth_header(config),
+    )
+    assert resp.status_code == 201
+    assert resp.get_json()["usuario"]["name"] == "Nome Novo"
+    assert resp.get_json()["usuario"]["active"] is True
+
+
+def test_conceder_usuario_com_ciss_code_de_outro_username_devolve_409(client, config):
+    criar_usuario_local(config, ciss_code="9", name="Alguem")
+
+    resp = client.post(
+        "/api/usuarios",
+        json={"username": "outro-username", "ciss_code": "9", "name": "Outra Pessoa"},
+        headers=_auth_header(config),
+    )
+    assert resp.status_code == 409
+
+
+def test_listar_usuarios_sem_token_devolve_401(client):
+    resp = client.get("/api/usuarios")
+    assert resp.status_code == 401
+
+
+def test_listar_usuarios_devolve_allowlist(client, config):
+    criar_usuario_local(config, ciss_code="10", name="Fulano")
+    resp = client.get("/api/usuarios", headers=_auth_header(config))
+    assert resp.status_code == 200
+    usuarios = resp.get_json()["usuarios"]
+    assert any(u["ciss_code"] == "10" and u["name"] == "Fulano" for u in usuarios)
