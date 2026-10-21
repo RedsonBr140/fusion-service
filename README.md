@@ -1,11 +1,9 @@
 # fusion-service
 
-Cargas Fusion — busca de carga no CISSPoder e integração ao Fusion DMS
-(webservice SOAP + portal web). Era uma tool do Toolkit (meta-natal); hoje
-é um app standalone: seu próprio frontend, backend, banco e deploy, sem
-nenhum acoplamento com o meta-natal — nem token compartilhado, nem CORS,
-nem link de volta. Login direto (allow-list local + CISS) é a única porta
-de entrada.
+Serviço que busca cargas no CISSPoder (DB2) e manda para o Fusion DMS —
+webservice SOAP e portal web. App standalone: frontend próprio, backend
+próprio, banco próprio, deploy próprio. Login direto (allow-list local +
+CISS) é a única porta de entrada.
 
 ## Stack
 
@@ -54,10 +52,12 @@ Tudo documentado em `.env.example`. Os grupos que importam:
   nenhuma.
 - `CISS_API_URL` / `CISS_CA_BUNDLE` — autenticação CISS (o login desta
   app).
-- `FUSION_API_URL/LOGIN/SENHA` — webservice SOAP do Fusion (`saveCarga` e
-  companhia). Todas ou nenhuma.
-- `FUSION_PORTAL_URL/LOGIN/SENHA` — portal web do Fusion (busca de
-  motorista, `fusion-py`). Todas ou nenhuma.
+- `FUSION_API_URL/LOGIN/SENHA` — webservice SOAP do Fusion (`saveCarga`,
+  `saveEntregaServico`, `sendMotoristas`, `sendVeiculos`, `sendClientes`,
+  `consultarVeiculo`, `consultarTodosVeiculos`). Todas ou nenhuma.
+- `FUSION_PORTAL_URL/LOGIN/SENHA` — portal web do Fusion (login humano via
+  `fusion-py`): busca e sugestão de motorista, checagem se um cliente já
+  está cadastrado. Todas ou nenhuma.
 - `DATABASE_PATH`, `PORT`.
 
 Qualquer grupo "todas ou nenhuma" ausente faz o recurso correspondente
@@ -83,6 +83,30 @@ GET  /api/usuarios                                  — lista quem tem acesso
 
 Ambas atrás de `login_required` — qualquer pessoa já com acesso pode
 conceder a outra.
+
+## O que o serviço faz
+
+Busca uma carga (ou pré-carga) no CISS, monta o payload que o Fusion
+exige, mostra pra revisão (motorista/veículo sugeridos, avisos do que
+falta) e envia. Duas chamadas SOAP compõem um envio, nessa ordem:
+`saveEntregaServico` registra o pedido com os itens de produto, e só
+depois `saveCarga` referencia esse pedido e forma a carga — o `saveCarga`
+em si não tem onde carregar item de produto. Ver `CLAUDE.md` para o
+mapeamento campo a campo e as decisões de desenho que não são óbvias
+lendo só o código.
+
+Toda tentativa de envio (sucesso ou falha) fica registrada em
+`cargas_fusion_fila` / `cargas_fusion_precarga_fila` — nada se perde num
+log; falha é visível e reenviável depois que o cadastro for corrigido.
+
+Motorista e cliente não têm cadastro local: motorista é lido ao vivo do
+portal web do Fusion (não existe `consultarMotorista` no SOAP), e cliente é
+sincronizado via `sendClientes` sob demanda, marcado em
+`fusion_clientes_sincronizados` pra não reenviar o cadastro em todo envio.
+Veículo e ajudante têm cadastro local (`fusion_veiculos`,
+`fusion_ajudantes`) porque o Fusion exige mais detalhe do que o CISS tem, e
+porque o `codigo_erp` precisa ser estável nos dois sentidos (cadastro ↔
+`saveCarga`).
 
 ## Rotas de negócio
 
@@ -126,49 +150,37 @@ app.py                  create_app() — monta clients, blueprints, serve fronte
 config.py                Config (dataclass) + loaders por grupo de env var
 database.py / schema.sql get_db(), migração idempotente
 integrations/
-  ciss.py                 leitura CISS DB2, reduzida aos 12 métodos usados aqui
+  ciss.py                 leitura CISS DB2, reduzida aos métodos usados aqui
   ciss_auth.py            login CISS (authenticate()) — isola o libciss, alpha e instável
-  fusion.py                webservice SOAP (saveCarga, sendVeiculos, ...)
-  fusion_portal.py         portal web (busca/sugestão de motorista)
+  fusion.py                webservice SOAP do Fusion (saveCarga, saveEntregaServico, sendMotoristas, ...)
+  fusion_portal.py         portal web do Fusion (busca/sugestão de motorista, checagem de cliente)
 auth/
   tokens.py               esquema de token de sessão (HMAC, sem estado)
   service.py               login, allow-list
   decorators.py             login_required via Bearer
   routes.py                 /login, /me, /logout, /usuarios
 cargas_fusion/
-  service.py                lógica de negócio (sem dependência de CISS)
+  service.py                lógica de negócio: cadastro local, montagem de payload, fila de envio
   routes.py                  rotas HTTP, usa os clients acima
-scripts/
-  migrar_de_meta_natal.py    migração única das 5 tabelas, roda no corte
 frontend/
   src/api.ts                 toda chamada HTTP, token em memória
-  src/types.ts                tipos portados de meta-natal/frontend/src/types/index.ts (commit 0cea91e)
-  src/components/ui/          primitivas (button, input, label, card, dialog) — mesmo visual do Toolkit
-  src/tools/cargas_fusion/    as telas e hooks da tool, como estavam no meta-natal
+  src/types.ts                tipos da API
+  src/components/ui/          primitivas (button, input, label, card, dialog)
+  src/tools/cargas_fusion/    telas e hooks
 ```
-
-## Migração única (corte do meta-natal)
-
-```bash
-.venv/bin/python scripts/migrar_de_meta_natal.py \
-  /caminho/para/meta-natal/backend/data/toolkit.db \
-  ./data/fusion_service.db
-```
-
-Idempotente (`INSERT OR IGNORE`) — seguro rodar de novo. Migra
-`fusion_veiculos`, `fusion_ajudantes`, `fusion_clientes_sincronizados`,
-`cargas_fusion_fila`, `cargas_fusion_precarga_fila`. Não toca
-`usuarios_locais` — essa é só deste serviço, de propósito.
 
 ## Regras que não se negociam
 
-Herdadas do meta-natal, válidas aqui de forma independente (não por
-reaproveitar código, por reaproveitar o princípio):
-
 - **CISS DB2 é somente leitura.** ODBC com `pyodbc`, só `SELECT`,
-  guardado em `validate_readonly_query`.
+  guardado em `validate_readonly_query`. A exceção é o Fusion: `saveCarga`
+  e companhia são escrita, mas é escrita em outro sistema via SOAP, não no
+  CISS DB2 — a regra de read-only nunca falou sobre o Fusion.
 - **A allow-list local é consultada antes do CISS.** Usuário fora dela
   nunca gera tráfego pro CISS.
-- **Nenhum log registra senha, token ou header `Authorization`.**
+- **Nenhum log registra senha, token ou header `Authorization`** — nem do
+  CISS, nem do Fusion.
 - **Sem ORM, sem SQLAlchemy, sem migrations.** `sqlite3` nativo,
   queries parametrizadas.
+- **Nada com formato de SOAP/XML atravessa `integrations/fusion.py` em
+  direção ao resto do projeto.** A fronteira devolve dict/lista já
+  decodificados do JSON de retorno, nunca o envelope.
