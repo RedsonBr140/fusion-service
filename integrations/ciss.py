@@ -360,7 +360,17 @@ class CissClient:
         completo das descobertas por trás desta cadeia de JOINs — resumo:
         NF real via PRODUTO_RETIRADO_NOTAS, pedido real via
         ORCAMENTO_PRE_NOTA, nenhum dos dois é IDPLANILHADOCORI direto.
-        """
+
+        Só itens de local de retirada com a integração Fusion marcada —
+        achado em produção (histórico, `IDORCAMENTO` 50369/50508):
+        `PRODUTO_RETIRADO.IDLOCALRETIRADA` pode variar **por item dentro
+        da mesma carga**, mesma NF (ex. um item retirado no balcão/"FR
+        CAIXA", junto de itens retirados pra entrega de verdade). Nada
+        além deste filtro de item olha pra isso — `_montar_payload` soma
+        valor/peso de todo item que `get_itens_carga` devolver — por isso
+        o corte é aqui, não lá: um item de local sem a integração nunca
+        foi carregado no caminhão desta carga, não devia contar no peso
+        nem no valor "enviado" que o Fusion recebe."""
         return self._fetch_all(
             "SELECT "
             "PR.NUMSEQUENCIA, "
@@ -379,6 +389,8 @@ class CissClient:
             "CAST(PG.COMPRIMENTO AS DOUBLE) AS COMPRIMENTO, "
             "CAST(PG.PESOBRUTO AS DOUBLE) AS PRODUTO_PESOBRUTO "
             "FROM PRODUTO_RETIRADO PR "
+            "JOIN LOCAL_RETIRADA LR_ITEM ON LR_ITEM.IDLOCALRETIRADA = PR.IDLOCALRETIRADA "
+            "  AND LR_ITEM.FLAGUTILIZAINTEGRACAOFUSION = 'T' "
             "LEFT JOIN PRODUTO_RETIRADO_NOTAS PRN "
             "  ON PRN.IDEMPRESA = PR.IDEMPRESA AND PRN.IDPLANILHA = PR.IDPLANILHA "
             " AND PRN.IDPRODUTO = PR.IDPRODUTO AND PRN.IDSUBPRODUTO = PR.IDSUBPRODUTO "
@@ -443,7 +455,12 @@ class CissClient:
         sem carga formada ainda, pedido/cliente/valor/peso são lidos direto
         pela chave da venda (`IDEMPRESAVENDA`/`IDPLANILHAVENDA`).
         `NUMSEQUENCIA` sintetizado com `ROW_NUMBER()` (não existe em
-        `PRE_CARGA_PROD`)."""
+        `PRE_CARGA_PROD`).
+
+        Mesmo filtro por item de `get_itens_carga` — só item de local de
+        retirada com a integração Fusion marcada, via `IDPONTORETIRADA`
+        (mesmo espaço de id de `LOCAL_RETIRADA.IDLOCALRETIRADA`, nome de
+        coluna diferente — ver `_FILTRO_FUSION_PRE_CARGA`)."""
         return self._fetch_all(
             "SELECT "
             "ROW_NUMBER() OVER (ORDER BY PCP.IDPLANILHAVENDA, PCP.IDPRODUTO, "
@@ -465,6 +482,8 @@ class CissClient:
             "CAST(PG.COMPRIMENTO AS DOUBLE) AS COMPRIMENTO, "
             "CAST(PG.PESOBRUTO AS DOUBLE) AS PRODUTO_PESOBRUTO "
             "FROM PRE_CARGA_PROD PCP "
+            "JOIN LOCAL_RETIRADA LR_ITEM ON LR_ITEM.IDLOCALRETIRADA = PCP.IDPONTORETIRADA "
+            "  AND LR_ITEM.FLAGUTILIZAINTEGRACAOFUSION = 'T' "
             "LEFT JOIN ORCAMENTO_PRE_NOTA OPN "
             "  ON OPN.IDEMPRESAPRENOTA = PCP.IDEMPRESAVENDA AND OPN.IDPLANILHAPRENOTA = PCP.IDPLANILHAVENDA "
             "LEFT JOIN NOTAS N ON N.IDEMPRESA = PCP.IDEMPRESAVENDA AND N.IDPLANILHA = PCP.IDPLANILHAVENDA "

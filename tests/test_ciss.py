@@ -434,3 +434,31 @@ def test_get_carga_por_nota_sem_resultado_devolve_none(monkeypatch):
     montar_driver(monkeypatch, description=[("IDEMPRESA",), ("IDPLANILHA",)], linhas=[])
 
     assert CissClient(DB).get_carga_por_nota(1, "9") is None
+
+
+# --- filtro por item: só local de retirada com integração Fusion -----------
+
+
+def test_get_itens_carga_filtra_item_por_local_de_retirada(monkeypatch):
+    """Achado em produção (histórico, IDORCAMENTO 50369/50508): um item
+    pode ter IDLOCALRETIRADA sem a integração marcada mesmo dentro de uma
+    carga com outros itens que têm — ex. um item retirado no balcão ("FR
+    CAIXA"), junto de itens de entrega de verdade, mesma NF. O filtro é
+    por item (JOIN), não por carga (EXISTS) como em get_cargas."""
+    _, _, cursor = montar_driver(monkeypatch, description=[("NUMSEQUENCIA",)], linhas=[])
+
+    CissClient(DB).get_itens_carga(1, 6329109)
+
+    assert "LR_ITEM.FLAGUTILIZAINTEGRACAOFUSION = 'T'" in cursor.sql_executado
+    assert "JOIN LOCAL_RETIRADA LR_ITEM ON LR_ITEM.IDLOCALRETIRADA = PR.IDLOCALRETIRADA" in cursor.sql_executado
+
+
+def test_get_itens_pre_carga_filtra_item_por_ponto_de_retirada(monkeypatch):
+    """Mesmo filtro de get_itens_carga, mas PRE_CARGA_PROD usa
+    IDPONTORETIRADA — mesmo espaço de id de LOCAL_RETIRADA.IDLOCALRETIRADA."""
+    _, _, cursor = montar_driver(monkeypatch, description=[("NUMSEQUENCIA",)], linhas=[])
+
+    CissClient(DB).get_itens_pre_carga(796109)
+
+    assert "LR_ITEM.FLAGUTILIZAINTEGRACAOFUSION = 'T'" in cursor.sql_executado
+    assert "JOIN LOCAL_RETIRADA LR_ITEM ON LR_ITEM.IDLOCALRETIRADA = PCP.IDPONTORETIRADA" in cursor.sql_executado

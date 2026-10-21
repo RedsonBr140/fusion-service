@@ -336,8 +336,10 @@ sistema, não por serem "dado ruim".
 local de retirada marcado `'T'` nessa coluna. Os outros ~89.4% são
 locais nomeados `"FR CAIXA ..."` (frente de caixa — venda balcão, cliente
 leva o produto na hora) — sem motorista, veículo ou entrega nenhuma,
-nunca deveriam aparecer numa tela de roteirização. Confirmado que uma
-carga nunca mistura locais com flags diferentes entre seus itens.
+nunca deveriam aparecer numa tela de roteirização. **Nenhuma carga desde
+o corte mistura locais com flags diferentes entre seus itens — mas isso
+não é garantido pelo schema, só pela prática atual** (ver filtro por item
+abaixo).
 
 `PRODUTO_RETIRADO.IDLOCALRETIRADA` é a chave pra carga real (a própria
 `RETIRADA_PRODUTOS` não tem essa coluna, só o item). Pré-carga usa
@@ -349,6 +351,38 @@ que duplicaria linha por item) — `_FILTRO_FUSION_CARGA`/
 `_FILTRO_FUSION_PRE_CARGA` em `integrations/ciss.py`. A tela expõe isso
 como checkbox ("Só cargas com integração Fusion", marcado por padrão) —
 desmarcar mostra tudo, pro caso de uma carga esperada não aparecer.
+
+### Filtro por item: uma carga pode ter itens de locais diferentes
+
+Achado em produção, histórico (`IDORCAMENTO` `50369`/`50508`, cargas
+`1_6329109` e `8_6332886`): `PRODUTO_RETIRADO.IDLOCALRETIRADA` pode
+variar **por item dentro da mesma carga, mesma NF** — ex. um item
+retirado no balcão ("FR CAIXA", porque aquele produto já estava
+disponível e o cliente levou na hora) junto de outros itens da mesma
+venda que ficaram pendentes pra entrega de verdade, retirados depois sob
+a mesma carga/retirada. Não achado desde o corte de integração (processo
+atual parece não misturar mais), mas o schema não impede — é só prática
+observada, não garantia.
+
+Isso importa porque `_montar_payload` soma `VALTOTLIQUIDO`/peso de **todo
+item que `get_itens_carga` devolver** pra aquele pedido — um item "FR
+CAIXA" senderia valor/peso de algo que já foi entregue no balcão, nunca
+carregado no caminhão desta carga, inflando o que o Fusion recebe como
+"enviado". Por isso `get_itens_carga`/`get_itens_pre_carga` filtram por
+item (`JOIN LOCAL_RETIRADA ... FLAGUTILIZAINTEGRACAOFUSION = 'T'`, não
+`EXISTS` como o filtro de carga acima) — um item de local sem a
+integração nunca aparece na lista de itens, nunca entra em
+`entregas_servico`/`entrega[]`, nunca é somado em valor/peso/cubagem.
+
+Importante: quando um mesmo pedido (`IDORCAMENTO`) é entregue em mais de
+uma carga ao longo do tempo (redespacho, entrega parcial — confirmado em
+produção, `IDORCAMENTO` `601424` em três cargas distintas), `valor`/`peso`
+somados pra cada carga **já são só a fração daquele pedido que está
+física nesta carga** — `get_itens_carga(id_empresa, id_planilha)` só
+devolve as linhas de `PRODUTO_RETIRADO` daquela carga específica, nunca o
+pedido inteiro. Isso é intencional: o que importa pro Fusion é quanto
+está sendo enviado por este caminhão agora, não o valor total da venda
+original.
 
 ## Métodos do WSDL não implementados
 
