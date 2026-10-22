@@ -117,13 +117,14 @@ def _montar_preview(
     origem_por_pedido = client.get_origem_pre_cargas_da_carga(id_empresa, id_planilha)
     pedidos_excluidos = service.pedidos_cobertos_por_pre_carga(conn, origem_por_pedido)
 
-    payload_carga, payload_entregas_servico, avisos = service.montar_payload_carga(
+    payload_carga, payload_entregas_servico, avisos, avisos_bloqueantes = service.montar_payload_carga(
         detalhe, itens, clientes, motorista, veiculo, pedidos_excluidos=pedidos_excluidos
     )
     return (
         payload_carga,
         payload_entregas_servico,
         avisos,
+        avisos_bloqueantes,
         itens_todos,
         sugestao_motorista,
         sugestao_veiculo,
@@ -162,10 +163,19 @@ def _montar_preview_pre_carga(
         else None
     )
 
-    payload_carga, payload_entregas_servico, avisos = service.montar_payload_pre_carga(
+    payload_carga, payload_entregas_servico, avisos, avisos_bloqueantes = service.montar_payload_pre_carga(
         detalhe, itens, clientes, motorista, veiculo
     )
-    return payload_carga, payload_entregas_servico, avisos, itens_todos, clientes, motorista, veiculo
+    return (
+        payload_carga,
+        payload_entregas_servico,
+        avisos,
+        avisos_bloqueantes,
+        itens_todos,
+        clientes,
+        motorista,
+        veiculo,
+    )
 
 
 # --- Cargas --------------------------------------------------------------
@@ -272,6 +282,7 @@ def ver_carga(id_empresa: int, id_planilha: int):
         payload_carga,
         payload_entregas_servico,
         avisos,
+        _avisos_bloqueantes,
         itens_todos,
         sugestao_motorista,
         sugestao_veiculo,
@@ -321,6 +332,7 @@ def enviar_carga(id_empresa: int, id_planilha: int):
         payload_carga,
         payload_entregas_servico,
         avisos,
+        avisos_bloqueantes,
         _itens_todos,
         _sugestao_motorista,
         _sugestao_veiculo,
@@ -334,6 +346,7 @@ def enviar_carga(id_empresa: int, id_planilha: int):
         payload_carga,
         payload_entregas_servico,
         avisos,
+        avisos_bloqueantes,
         clientes_por_idclifor=clientes,
         fusion_portal_client=_fusion_portal_client(),
         forcar=bool(corpo.get("forcar")),
@@ -418,7 +431,16 @@ def ver_pre_carga(id_empresa: int, id_precarga: int):
     if resultado is None:
         return jsonify({"error": MSG_CARGA_NAO_ENCONTRADA}), 404
 
-    payload_carga, payload_entregas_servico, avisos, itens_todos, _clientes, motorista, veiculo = resultado
+    (
+        payload_carga,
+        payload_entregas_servico,
+        avisos,
+        _avisos_bloqueantes,
+        itens_todos,
+        _clientes,
+        motorista,
+        veiculo,
+    ) = resultado
     item_fila = service.buscar_item_fila_pre_carga(get_db(), id_empresa, id_precarga)
     return (
         jsonify(
@@ -461,7 +483,16 @@ def enviar_pre_carga(id_empresa: int, id_precarga: int):
     if resultado is None:
         return jsonify({"error": MSG_CARGA_NAO_ENCONTRADA}), 404
 
-    payload_carga, payload_entregas_servico, avisos, _itens_todos, clientes, motorista, veiculo = resultado
+    (
+        payload_carga,
+        payload_entregas_servico,
+        avisos,
+        avisos_bloqueantes,
+        _itens_todos,
+        clientes,
+        motorista,
+        veiculo,
+    ) = resultado
     saida = service.processar_envio_pre_carga(
         get_db(),
         _fusion_client(),
@@ -475,6 +506,7 @@ def enviar_pre_carga(id_empresa: int, id_precarga: int):
         payload_carga,
         payload_entregas_servico,
         avisos,
+        avisos_bloqueantes,
         clientes_por_idclifor=clientes,
         fusion_portal_client=_fusion_portal_client(),
         forcar=bool(corpo.get("forcar")),

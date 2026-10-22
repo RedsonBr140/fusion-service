@@ -671,10 +671,24 @@ def _montar_payload(
     quando consultar o CISS.
     """
     avisos: list[str] = []
+    # Subconjunto de `avisos` que de fato impede o envio — usado por
+    # `processar_envio` pra decidir se chama o Fusion, nunca `avisos`
+    # inteiro: um pedido já coberto por pré-carga, ou sem orçamento
+    # vinculado, é esperado e não deveria travar o resto da carga (D11 e
+    # D-pré-carga, já documentados como "aviso não bloqueante" — mas até
+    # esta correção `processar_envio` tratava todo aviso como bloqueante,
+    # travando até pedidos novos de uma carga parcialmente coberta).
+    avisos_bloqueantes: list[str] = []
+
+    def _aviso(texto: str, *, bloqueante: bool = True) -> None:
+        avisos.append(texto)
+        if bloqueante:
+            avisos_bloqueantes.append(texto)
+
     pedidos_excluidos = pedidos_excluidos or set()
 
     if not itens:
-        avisos.append("Nenhuma entrega selecionada para esta carga.")
+        _aviso("Nenhuma entrega selecionada para esta carga.")
 
     entrega_stubs: list[dict] = []
     entregas_carga: list[dict] = []
@@ -686,8 +700,9 @@ def _montar_payload(
     seq = 0
     for id_pedido_origem, itens_do_pedido in _agrupar_itens_por_pedido(itens):
         if id_pedido_origem in pedidos_excluidos:
-            avisos.append(
-                f"Pedido {id_pedido_origem} já enviado ao Fusion como pré-carga — não reenviado."
+            _aviso(
+                f"Pedido {id_pedido_origem} já enviado ao Fusion como pré-carga — não reenviado.",
+                bloqueante=False,
             )
             continue
 
@@ -699,9 +714,10 @@ def _montar_payload(
         # pedido sem orçamento vinculado não deve aparecer pro Fusion).
         numero_pedido = primeiro.get("IDORCAMENTO")
         if numero_pedido is None:
-            avisos.append(
+            _aviso(
                 f"Pedido (orçamento) do item {id_pedido_origem} não encontrado no CISS — "
-                "entrega não enviada ao Fusion."
+                "entrega não enviada ao Fusion.",
+                bloqueante=False,
             )
             continue
 
@@ -709,7 +725,7 @@ def _montar_payload(
         id_clifor = primeiro.get("IDCLIFORENTREGA") or primeiro.get("IDCLIFOR")
         cliente_ciss = clientes_por_idclifor.get(id_clifor) if id_clifor else None
         if id_clifor and cliente_ciss is None:
-            avisos.append(f"Cliente {id_clifor} do pedido {id_pedido_origem} não encontrado no CISS.")
+            _aviso(f"Cliente {id_clifor} do pedido {id_pedido_origem} não encontrado no CISS.")
         if id_clifor:
             ids_clifor_dos_pedidos.add(id_clifor)
 
@@ -829,10 +845,19 @@ def _montar_payload(
             }
         )
 
-    if motorista is None:
-        avisos.append("Nenhum motorista encontrado no Fusion para esta carga.")
-    if veiculo is None:
-        avisos.append("Nenhum veículo encontrado no Fusion para esta carga.")
+    # Só cobra motorista/veículo quando há de fato algo pra enviar — uma
+    # carga cujos pedidos todos já foram cobertos por pré-carga (ou não
+    # têm orçamento vinculado) não tem `entrega_stubs`, e motorista/
+    # veículo ausentes nesse caso não são um problema de verdade: não há
+    # nada pra anexar eles. Sem essa guarda, uma carga 100% resolvida por
+    # outro canal ficaria travada em "pendente" pra sempre (motorista
+    # nunca resolvido), o que importa especialmente quando o envio for
+    # automático — nada deveria reprocessar essa carga pra sempre.
+    if entrega_stubs:
+        if motorista is None:
+            _aviso("Nenhum motorista encontrado no Fusion para esta carga.")
+        if veiculo is None:
+            _aviso("Nenhum veículo encontrado no Fusion para esta carga.")
 
     # Pedido pra um cliente só (o caso comum — carga pra uma única entrega,
     # ou várias entregas da mesma obra/cliente): anexa o nome no destino,
@@ -866,7 +891,7 @@ def _montar_payload(
     if veiculo is not None:
         payload_carga["veiculo"] = [veiculo_local_para_envio_fusion(veiculo)]
 
-    return payload_carga, entregas_servico, avisos
+    return payload_carga, entregas_servico, avisos, avisos_bloqueantes
 
 
 def montar_payload_carga(
@@ -877,9 +902,11 @@ def montar_payload_carga(
     veiculo: Mapping[str, object] | None,
     *,
     pedidos_excluidos: set[int] | None = None,
-) -> tuple[dict, list[dict], list[str]]:
+) -> tuple[dict, list[dict], list[str], list[str]]:
     """Monta o envio de uma carga real (`DBA.RETIRADA_PRODUTOS`) — ver
-    `_montar_payload` para o shape completo e os avisos gerados.
+    `_montar_payload` para o shape completo, os avisos gerados, e o quarto
+    valor devolvido (`avisos_bloqueantes`, o subconjunto de `avisos` que
+    de fato impede o envio).
 
     `pedidos_excluidos` vem de `pedidos_cobertos_por_pre_carga`: pedidos
     desta carga cujos itens já foram enviados ao Fusion como parte de uma
@@ -915,7 +942,7 @@ def montar_payload_pre_carga(
     clientes_por_idclifor: Mapping[int, Mapping[str, object] | None],
     motorista: Mapping[str, object] | None,
     veiculo: Mapping[str, object] | None,
-) -> tuple[dict, list[dict], list[str]]:
+) -> tuple[dict, list[dict], list[str], list[str]]:
     """Monta o envio de uma pré-carga (`DBA.PRE_CARGA`) como se já fosse
     uma carga formada — ver `_montar_payload` para o shape completo.
 
@@ -1124,6 +1151,7 @@ def processar_envio(
     payload_carga: Mapping[str, object],
     payload_entregas_servico: Sequence[Mapping[str, object]],
     avisos: Sequence[str],
+    avisos_bloqueantes: Sequence[str],
     *,
     clientes_por_idclifor: Mapping[int, Mapping[str, object] | None] | None = None,
     fusion_portal_client: FusionPortalClient | None = None,
@@ -1139,10 +1167,17 @@ def processar_envio(
     confirmou upsert para esses dois métodos, diferente de
     `sendMotoristas`/`sendVeiculos`).
 
-    Avisos bloqueantes (motorista/veículo não cadastrado, cliente não
-    encontrado) nem chegam a gerar uma chamada ao Fusion — já se sabe que
-    seriam rejeitados, e poupar a chamada poupa também o Fusion de
-    produção de receber uma carga que a gente já sabe que está incompleta.
+    `avisos_bloqueantes` (motorista/veículo não cadastrado, cliente não
+    encontrado, nenhuma entrega) nem chega a gerar uma chamada ao Fusion —
+    já se sabe que seriam rejeitados. `avisos` (o superconjunto, com os
+    avisos só informativos — pedido já coberto por pré-carga, pedido sem
+    orçamento) é o que fica gravado/exibido, mas não trava o envio por si
+    só: uma carga com pedidos parcialmente cobertos por uma pré-carga
+    manda só os pedidos novos; uma carga 100% coberta (sem nada de novo
+    pra mandar, `payload_carga["entrega"]` vazio) é marcada `ENVIADA`
+    direto, sem chamar o Fusion — importante pro envio automático de
+    carga não ficar reprocessando pra sempre algo que já foi resolvido
+    por outro canal (pré-carga manual).
 
     `clientes_por_idclifor` (o mesmo dict pré-buscado que
     `montar_payload_carga` usa) dispara `sendClientes` para todo cliente
@@ -1162,10 +1197,19 @@ def processar_envio(
         if item_existente is not None and item_existente["status"] == "ENVIADA":
             return {"status": "ja_enviada", "fila": item_existente}
 
-    if avisos:
+    if avisos_bloqueantes:
         motivo = "; ".join(avisos)
         fila = _registrar_falha_na_fila(conn, id_empresa, id_planilha, motivo, avisos)
         return {"status": "pendente", "motivo": motivo, "avisos": list(avisos), "fila": fila}
+
+    if not payload_carga.get("entrega"):
+        # Nada de novo pra mandar — todo pedido desta carga já foi
+        # resolvido por outro canal (coberto por pré-carga ENVIADA, ou
+        # sem orçamento vinculado). Marca enviada sem chamar o Fusion:
+        # chamar saveCarga com entrega[] vazio seria rejeitado de todo
+        # jeito ("O Array de Dados do saveCarga tem que ser um array").
+        fila = _marcar_enviada_na_fila(conn, id_empresa, id_planilha)
+        return {"status": "enviada", "resultado": None, "fila": fila}
 
     if fusion_client is None:
         fila = _registrar_falha_na_fila(conn, id_empresa, id_planilha, "Fusion não configurado.", ())
@@ -1386,6 +1430,7 @@ def processar_envio_pre_carga(
     payload_carga: Mapping[str, object],
     payload_entregas_servico: Sequence[Mapping[str, object]],
     avisos: Sequence[str],
+    avisos_bloqueantes: Sequence[str],
     *,
     clientes_por_idclifor: Mapping[int, Mapping[str, object] | None] | None = None,
     fusion_portal_client: FusionPortalClient | None = None,
@@ -1393,26 +1438,35 @@ def processar_envio_pre_carga(
 ) -> dict:
     """Mesma lógica de `processar_envio`, pra pré-carga — ver lá para o
     porquê de cada decisão (trava contra reenvio, ordem
-    `saveEntregaServico` antes de `saveCarga`, avisos bloqueantes sem
-    chamada ao Fusion, sincronização de cliente via `sendClientes` antes
-    do `saveEntregaServico`). `codigo_erp`/`motorista_codigo_erp`/
-    `motorista_nome`/`veiculo_codigo_erp`/`veiculo_descricao` ficam
-    gravados na fila mesmo numa falha, pra tela pré-preencher a escolha na
-    próxima tentativa — nem motorista nem veículo têm mais `id` local: o
-    `codigo_erp` já é o identificador (vem do Fusion), e nome/descrição são
-    snapshot pra exibir sem precisar buscar de novo no Fusion."""
+    `saveEntregaServico` antes de `saveCarga`, `avisos_bloqueantes` sem
+    chamada ao Fusion mas `avisos` informativos não travando o resto,
+    nada pra enviar marca `ENVIADA` sem chamar o Fusion, sincronização de
+    cliente via `sendClientes` antes do `saveEntregaServico`).
+    `codigo_erp`/`motorista_codigo_erp`/`motorista_nome`/
+    `veiculo_codigo_erp`/`veiculo_descricao` ficam gravados na fila mesmo
+    numa falha, pra tela pré-preencher a escolha na próxima tentativa —
+    nem motorista nem veículo têm mais `id` local: o `codigo_erp` já é o
+    identificador (vem do Fusion), e nome/descrição são snapshot pra
+    exibir sem precisar buscar de novo no Fusion."""
     if not forcar:
         item_existente = buscar_item_fila_pre_carga(conn, id_empresa, id_precarga)
         if item_existente is not None and item_existente["status"] == "ENVIADA":
             return {"status": "ja_enviada", "fila": item_existente}
 
-    if avisos:
+    if avisos_bloqueantes:
         motivo = "; ".join(avisos)
         fila = _registrar_falha_na_fila_pre_carga(
             conn, id_empresa, id_precarga, codigo_erp, motorista_codigo_erp, motorista_nome,
             veiculo_codigo_erp, veiculo_descricao, motivo, avisos,
         )
         return {"status": "pendente", "motivo": motivo, "avisos": list(avisos), "fila": fila}
+
+    if not payload_carga.get("entrega"):
+        fila = _marcar_enviada_na_fila_pre_carga(
+            conn, id_empresa, id_precarga, codigo_erp, motorista_codigo_erp, motorista_nome,
+            veiculo_codigo_erp, veiculo_descricao,
+        )
+        return {"status": "enviada", "resultado": None, "fila": fila}
 
     if fusion_client is None:
         fila = _registrar_falha_na_fila_pre_carga(

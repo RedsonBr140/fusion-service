@@ -384,11 +384,12 @@ VEICULO = {"codigo_erp": "V-1", "placa": "KGJ6098", "descricao": "WOLKS", "model
 
 
 def test_montar_payload_carga_monta_entrega_e_carga():
-    payload_carga, entregas_servico, avisos = service.montar_payload_carga(
+    payload_carga, entregas_servico, avisos, avisos_bloqueantes = service.montar_payload_carga(
         DETALHE, [ITEM], {26623: CLIENTE}, MOTORISTA, VEICULO
     )
 
     assert avisos == []
+    assert avisos_bloqueantes == []
     assert payload_carga["cargas"][0]["codigo_erp"] == "3_22099141"
     assert payload_carga["cargas"][0]["codmotorista"] == "M-1"
     assert payload_carga["cargas"][0]["codveiculo"] == "V-1"
@@ -452,13 +453,17 @@ def test_montar_payload_carga_ignora_pedido_sem_orcamento_vinculado():
     orçamento, ou NF/pedido ainda não gerados), a entrega não entra no
     envio — nem em saveCarga, nem em saveEntregaServico — só o aviso."""
     item_sem_orcamento = {**ITEM, "IDORCAMENTO": None}
-    payload_carga, entregas_servico, avisos = service.montar_payload_carga(
+    payload_carga, entregas_servico, avisos, avisos_bloqueantes = service.montar_payload_carga(
         DETALHE, [item_sem_orcamento], {26623: CLIENTE}, MOTORISTA, VEICULO
     )
 
     assert payload_carga["entrega"] == []
     assert entregas_servico == []
     assert any("Pedido (orçamento)" in a for a in avisos)
+    # Não bloqueante (D11): sem orçamento vinculado não é um erro que
+    # devesse travar o resto da carga — aqui não há resto, mas o aviso
+    # não deve aparecer entre os bloqueantes mesmo assim.
+    assert avisos_bloqueantes == []
 
 
 def test_montar_payload_carga_envia_pedidos_com_orcamento_ignorando_os_sem():
@@ -467,7 +472,7 @@ def test_montar_payload_carga_envia_pedidos_com_orcamento_ignorando_os_sem():
     item_sem_orcamento = {
         **ITEM, "IDORCAMENTO": None, "IDPLANILHADOCORI": 999999, "NUMSEQUENCIA": 99,
     }
-    payload_carga, entregas_servico, avisos = service.montar_payload_carga(
+    payload_carga, entregas_servico, avisos, _avisos_bloqueantes = service.montar_payload_carga(
         DETALHE, [item_sem_orcamento, ITEM], {26623: CLIENTE}, MOTORISTA, VEICULO
     )
 
@@ -480,7 +485,7 @@ def test_montar_payload_carga_envia_pedidos_com_orcamento_ignorando_os_sem():
 
 def test_montar_payload_carga_agrupa_itens_do_mesmo_pedido_numa_so_entrega():
     item_mesmo_pedido = {**ITEM, "IDSUBPRODUTO": 999, "VALTOTLIQUIDO": 10.0, "PESOBRUTO": 1.0}
-    payload_carga, entregas_servico, _ = service.montar_payload_carga(
+    payload_carga, entregas_servico, _, _ = service.montar_payload_carga(
         DETALHE, [ITEM, item_mesmo_pedido], {26623: CLIENTE}, MOTORISTA, VEICULO
     )
 
@@ -503,7 +508,7 @@ def test_montar_payload_carga_nao_anexa_cliente_ao_destino_com_mais_de_um():
         "IDCLIFOR": 99999,
         "NUMSEQUENCIA": 2,
     }
-    payload_carga, _, _ = service.montar_payload_carga(
+    payload_carga, _, _, _ = service.montar_payload_carga(
         DETALHE, [ITEM, item_outro_pedido], {26623: CLIENTE, 99999: outro_cliente}, MOTORISTA, VEICULO
     )
 
@@ -520,7 +525,7 @@ def test_montar_payload_carga_calcula_cubagem_real_a_partir_das_dimensoes():
         "COMPRIMENTO": 12.0,
         "QTDPRODUTO": 2.0,
     }
-    payload_carga, _, _ = service.montar_payload_carga(
+    payload_carga, _, _, _ = service.montar_payload_carga(
         DETALHE, [item_com_dimensoes], {26623: CLIENTE}, MOTORISTA, VEICULO
     )
 
@@ -529,25 +534,49 @@ def test_montar_payload_carga_calcula_cubagem_real_a_partir_das_dimensoes():
 
 
 def test_montar_payload_carga_avisa_sobre_motorista_e_veiculo_ausentes():
-    payload_carga, _, avisos = service.montar_payload_carga(DETALHE, [ITEM], {26623: CLIENTE}, None, None)
+    payload_carga, _, avisos, avisos_bloqueantes = service.montar_payload_carga(
+        DETALHE, [ITEM], {26623: CLIENTE}, None, None
+    )
 
     assert any("motorista" in a for a in avisos)
     assert any("veículo" in a for a in avisos)
     assert "motorista" not in payload_carga
     assert "veiculo" not in payload_carga
+    # Bloqueante de verdade: há entrega pra mandar, mas falta motorista/veículo.
+    assert avisos_bloqueantes == avisos
+
+
+def test_montar_payload_carga_sem_itens_pra_enviar_nao_cobra_motorista_e_veiculo():
+    """Carga cujo único pedido já foi coberto por pré-carga: não há nada
+    pra anexar motorista/veículo, então a ausência deles não é um
+    problema de verdade — sem essa guarda, uma carga 100% resolvida por
+    outro canal ficaria travada pra sempre (importa pro envio automático,
+    que não deveria reprocessar isso indefinidamente)."""
+    payload_carga, entregas_servico, avisos, avisos_bloqueantes = service.montar_payload_carga(
+        DETALHE, [ITEM], {26623: CLIENTE}, None, None, pedidos_excluidos={ITEM["IDPLANILHADOCORI"]}
+    )
+
+    assert payload_carga["entrega"] == []
+    assert entregas_servico == []
+    assert not any("motorista" in a for a in avisos)
+    assert not any("veículo" in a for a in avisos)
+    assert avisos_bloqueantes == []
 
 
 def test_montar_payload_carga_avisa_sobre_cliente_nao_encontrado():
-    _, _, avisos = service.montar_payload_carga(DETALHE, [ITEM], {26623: None}, MOTORISTA, VEICULO)
+    _, _, avisos, avisos_bloqueantes = service.montar_payload_carga(
+        DETALHE, [ITEM], {26623: None}, MOTORISTA, VEICULO
+    )
 
     assert any("não encontrado no CISS" in a for a in avisos)
+    assert avisos_bloqueantes == avisos
 
 
 def test_montar_payload_carga_dt_saida_e_sempre_amanha_as_7_ignorando_o_ciss():
     """D3 da spec: dt_saida nunca vem do CISS — regra fixa, mesmo quando
     DTHORASAIDA está preenchido com outra coisa."""
     detalhe_com_dthorasaida = {**DETALHE, "DTHORASAIDA": "2019-01-01 00:00:00"}
-    payload_carga, _, _ = service.montar_payload_carga(
+    payload_carga, _, _, _ = service.montar_payload_carga(
         detalhe_com_dthorasaida, [ITEM], {26623: CLIENTE}, MOTORISTA, VEICULO
     )
 
@@ -667,7 +696,10 @@ class FusionSaveCargaFalso:
 def test_processar_envio_com_aviso_nao_chama_o_fusion(conn):
     fusion = FusionSaveCargaFalso()
 
-    saida = service.processar_envio(conn, fusion, 3, 22099141, {"cargas": [{}]}, [], ["sem motorista"])
+    saida = service.processar_envio(
+        conn, fusion, 3, 22099141, {"entrega": [{"pedido_erp": "x"}], "cargas": [{}]},
+        [], ["sem motorista"], ["sem motorista"],
+    )
 
     assert saida["status"] == "pendente"
     assert fusion.enviado is None
@@ -675,7 +707,9 @@ def test_processar_envio_com_aviso_nao_chama_o_fusion(conn):
 
 
 def test_processar_envio_sem_fusion_configurado_enfileira(conn):
-    saida = service.processar_envio(conn, None, 3, 22099141, {"cargas": [{}]}, [], [])
+    saida = service.processar_envio(
+        conn, None, 3, 22099141, {"entrega": [{"pedido_erp": "x"}], "cargas": [{}]}, [], [], []
+    )
 
     assert saida["status"] == "pendente"
     assert "não configurado" in saida["motivo"]
@@ -684,7 +718,10 @@ def test_processar_envio_sem_fusion_configurado_enfileira(conn):
 def test_processar_envio_fusion_indisponivel_enfileira(conn):
     fusion = FusionSaveCargaFalso(erro=FusionUnavailable())
 
-    saida = service.processar_envio(conn, fusion, 3, 22099141, {"cargas": [{}]}, [{"pedido_erp": "x"}], [])
+    saida = service.processar_envio(
+        conn, fusion, 3, 22099141, {"entrega": [{"pedido_erp": "x"}], "cargas": [{}]},
+        [{"pedido_erp": "x"}], [], [],
+    )
 
     assert saida["status"] == "pendente"
     assert "indisponível" in saida["motivo"].lower()
@@ -693,7 +730,9 @@ def test_processar_envio_fusion_indisponivel_enfileira(conn):
 def test_processar_envio_fusion_rejeita_enfileira_com_o_motivo(conn):
     fusion = FusionSaveCargaFalso(resultado={"msg": "codmotorista () nao encontrado"})
 
-    saida = service.processar_envio(conn, fusion, 3, 22099141, {"cargas": [{}]}, [], [])
+    saida = service.processar_envio(
+        conn, fusion, 3, 22099141, {"entrega": [{"pedido_erp": "x"}], "cargas": [{}]}, [], [], []
+    )
 
     assert saida["status"] == "pendente"
     assert "nao encontrado" in saida["motivo"]
@@ -706,7 +745,8 @@ def test_processar_envio_entrega_servico_rejeitada_nao_chama_save_carga(conn):
     )
 
     saida = service.processar_envio(
-        conn, fusion, 3, 22099141, {"cargas": [{}]}, [{"pedido_erp": "x"}], []
+        conn, fusion, 3, 22099141, {"entrega": [{"pedido_erp": "x"}], "cargas": [{}]},
+        [{"pedido_erp": "x"}], [], [],
     )
 
     assert saida["status"] == "pendente"
@@ -717,9 +757,11 @@ def test_processar_envio_entrega_servico_rejeitada_nao_chama_save_carga(conn):
 def test_processar_envio_feliz_marca_enviada(conn):
     fusion = FusionSaveCargaFalso(resultado={"success": "123", "errors": []})
 
-    payload_carga = {"cargas": [{"codigo_erp": "3_22099141"}]}
+    payload_carga = {"entrega": [{"pedido_erp": "x"}], "cargas": [{"codigo_erp": "3_22099141"}]}
     payload_entregas_servico = [{"pedido_erp": "22094297_22099141"}]
-    saida = service.processar_envio(conn, fusion, 3, 22099141, payload_carga, payload_entregas_servico, [])
+    saida = service.processar_envio(
+        conn, fusion, 3, 22099141, payload_carga, payload_entregas_servico, [], []
+    )
 
     assert saida["status"] == "enviada"
     assert fusion.enviado == [payload_carga]
@@ -728,11 +770,15 @@ def test_processar_envio_feliz_marca_enviada(conn):
 
 
 def test_processar_envio_feliz_depois_de_uma_falha_marca_a_fila_como_enviada(conn):
-    service.processar_envio(conn, None, 3, 22099141, {"cargas": [{}]}, [], [])
+    service.processar_envio(
+        conn, None, 3, 22099141, {"entrega": [{"pedido_erp": "x"}], "cargas": [{}]}, [], [], []
+    )
     assert service.listar_fila(conn)[0]["status"] == "PENDENTE"
 
     fusion = FusionSaveCargaFalso(resultado={"success": "123", "errors": []})
-    service.processar_envio(conn, fusion, 3, 22099141, {"cargas": [{}]}, [], [])
+    service.processar_envio(
+        conn, fusion, 3, 22099141, {"entrega": [{"pedido_erp": "x"}], "cargas": [{}]}, [], [], []
+    )
 
     assert service.listar_fila(conn) == []
     assert service.listar_fila(conn, apenas_pendentes=False)[0]["status"] == "ENVIADA"
@@ -743,7 +789,9 @@ def test_processar_envio_feliz_de_primeira_tambem_fica_rastreavel(conn):
     precisa virar registro — é a base de buscar_item_fila/forcar."""
     fusion = FusionSaveCargaFalso(resultado={"success": "123", "errors": []})
 
-    service.processar_envio(conn, fusion, 3, 22099141, {"cargas": [{}]}, [], [])
+    service.processar_envio(
+        conn, fusion, 3, 22099141, {"entrega": [{"pedido_erp": "x"}], "cargas": [{}]}, [], [], []
+    )
 
     item = service.buscar_item_fila(conn, 3, 22099141)
     assert item["status"] == "ENVIADA"
@@ -762,10 +810,14 @@ def test_sqlite_utc_iso():
 
 def test_processar_envio_carga_ja_enviada_nao_chama_o_fusion_de_novo(conn):
     primeira = FusionSaveCargaFalso(resultado={"success": "123", "errors": []})
-    service.processar_envio(conn, primeira, 3, 22099141, {"cargas": [{}]}, [], [])
+    service.processar_envio(
+        conn, primeira, 3, 22099141, {"entrega": [{"pedido_erp": "x"}], "cargas": [{}]}, [], [], []
+    )
 
     segunda = FusionSaveCargaFalso(resultado={"success": "123", "errors": []})
-    saida = service.processar_envio(conn, segunda, 3, 22099141, {"cargas": [{}]}, [], [])
+    saida = service.processar_envio(
+        conn, segunda, 3, 22099141, {"entrega": [{"pedido_erp": "x"}], "cargas": [{}]}, [], [], []
+    )
 
     assert saida["status"] == "ja_enviada"
     assert saida["fila"]["status"] == "ENVIADA"
@@ -775,11 +827,11 @@ def test_processar_envio_carga_ja_enviada_nao_chama_o_fusion_de_novo(conn):
 
 def test_processar_envio_carga_ja_enviada_com_forcar_chama_o_fusion(conn):
     primeira = FusionSaveCargaFalso(resultado={"success": "123", "errors": []})
-    service.processar_envio(conn, primeira, 3, 22099141, {"cargas": [{}]}, [], [])
+    service.processar_envio(conn, primeira, 3, 22099141, {"entrega": [{"pedido_erp": "x"}], "cargas": [{}]}, [], [], [])
 
     segunda = FusionSaveCargaFalso(resultado={"success": "456", "errors": []})
-    payload_carga = {"cargas": [{"codigo_erp": "3_22099141"}]}
-    saida = service.processar_envio(conn, segunda, 3, 22099141, payload_carga, [], [], forcar=True)
+    payload_carga = {"entrega": [{"pedido_erp": "x"}], "cargas": [{"codigo_erp": "3_22099141"}]}
+    saida = service.processar_envio(conn, segunda, 3, 22099141, payload_carga, [], [], [], forcar=True)
 
     assert saida["status"] == "enviada"
     assert segunda.enviado == [payload_carga]
@@ -788,7 +840,7 @@ def test_processar_envio_carga_ja_enviada_com_forcar_chama_o_fusion(conn):
 def test_cargas_ja_enviadas_inclui_enviada_de_verdade_e_marcada_manualmente(conn):
     service.marcar_integrada_manualmente(conn, 1, 100)
     fusion = FusionSaveCargaFalso(resultado={"success": "123", "errors": []})
-    service.processar_envio(conn, fusion, 2, 200, {"cargas": [{}]}, [], [])
+    service.processar_envio(conn, fusion, 2, 200, {"entrega": [{"pedido_erp": "x"}], "cargas": [{}]}, [], [], [])
     service._registrar_falha_na_fila(conn, 3, 300, "sem motorista", [])
 
     assert service.cargas_ja_enviadas(conn) == {(1, 100), (2, 200)}
@@ -806,7 +858,7 @@ def test_processar_envio_de_carga_marcada_manualmente_recusa_sem_forcar(conn):
     service.marcar_integrada_manualmente(conn, 3, 22099141)
 
     fusion = FusionSaveCargaFalso(resultado={"success": "123", "errors": []})
-    saida = service.processar_envio(conn, fusion, 3, 22099141, {"cargas": [{}]}, [], [])
+    saida = service.processar_envio(conn, fusion, 3, 22099141, {"entrega": [{"pedido_erp": "x"}], "cargas": [{}]}, [], [], [])
 
     assert saida["status"] == "ja_enviada"
     assert saida["fila"]["integrada_manualmente"] is True
@@ -819,7 +871,7 @@ def test_processar_envio_real_depois_de_marcada_manualmente_desliga_a_flag(conn)
     service.marcar_integrada_manualmente(conn, 3, 22099141)
 
     fusion = FusionSaveCargaFalso(resultado={"success": "123", "errors": []})
-    saida = service.processar_envio(conn, fusion, 3, 22099141, {"cargas": [{}]}, [], [], forcar=True)
+    saida = service.processar_envio(conn, fusion, 3, 22099141, {"entrega": [{"pedido_erp": "x"}], "cargas": [{}]}, [], [], [], forcar=True)
 
     assert saida["status"] == "enviada"
     assert saida["fila"]["integrada_manualmente"] is False
@@ -872,12 +924,17 @@ def test_filtrar_itens_selecionados_vazio_devolve_lista_vazia():
 
 
 def test_montar_payload_carga_avisa_quando_nao_ha_itens():
-    payload, entregas_servico, avisos = service.montar_payload_carga(DETALHE, [], {}, MOTORISTA, VEICULO)
+    payload, entregas_servico, avisos, avisos_bloqueantes = service.montar_payload_carga(
+        DETALHE, [], {}, MOTORISTA, VEICULO
+    )
 
     assert "Nenhuma entrega selecionada" in " ".join(avisos)
     assert payload["entrega"] == []
     assert payload["cargas"][0]["entregas_carga"] == []
     assert entregas_servico == []
+    # Bloqueante de verdade: a carga não tem nenhuma entrega, diferente de
+    # "toda entrega já foi coberta por outro canal".
+    assert avisos_bloqueantes == avisos
 
 
 # --- Pré-carga: payload e codigo_erp ---------------------------------------
@@ -914,11 +971,12 @@ def test_codigo_pedido_generico():
 
 
 def test_montar_payload_pre_carga_usa_o_namespace_proprio():
-    payload_carga, entregas_servico, avisos = service.montar_payload_pre_carga(
+    payload_carga, entregas_servico, avisos, avisos_bloqueantes = service.montar_payload_pre_carga(
         DETALHE_PRE_CARGA, [ITEM_PRE_CARGA], {26623: CLIENTE}, MOTORISTA, VEICULO
     )
 
     assert avisos == []
+    assert avisos_bloqueantes == []
     assert payload_carga["cargas"][0]["codigo_erp"] == "PC_2_796109"
     assert payload_carga["cargas"][0]["codmotorista"] == "M-1"
     assert payload_carga["cargas"][0]["codveiculo"] == "V-1"
@@ -934,7 +992,7 @@ def test_montar_payload_pre_carga_usa_o_namespace_proprio():
 def test_montar_payload_pre_carga_sem_nf_fica_vazia_nao_errada():
     """Sem carga formada, não há NF real ainda — nf/serie ficam vazios em
     vez de repetir o erro do D11 original (ler a pré-nota como NF)."""
-    _, entregas_servico, _ = service.montar_payload_pre_carga(
+    _, entregas_servico, _, _ = service.montar_payload_pre_carga(
         DETALHE_PRE_CARGA, [ITEM_PRE_CARGA], {26623: CLIENTE}, MOTORISTA, VEICULO
     )
 
@@ -946,7 +1004,7 @@ def test_montar_payload_pre_carga_avisa_sobre_motorista_e_veiculo_ausentes():
     """Sem sugestão automática (o CISS nunca preenche motorista/veículo
     numa pré-carga) — a ausência vira o mesmo aviso bloqueante de uma
     carga real sem cadastro correspondente."""
-    payload_carga, _, avisos = service.montar_payload_pre_carga(
+    payload_carga, _, avisos, avisos_bloqueantes = service.montar_payload_pre_carga(
         DETALHE_PRE_CARGA, [ITEM_PRE_CARGA], {26623: CLIENTE}, None, None
     )
 
@@ -954,13 +1012,14 @@ def test_montar_payload_pre_carga_avisa_sobre_motorista_e_veiculo_ausentes():
     assert any("veículo" in a for a in avisos)
     assert "motorista" not in payload_carga
     assert "veiculo" not in payload_carga
+    assert avisos_bloqueantes == avisos
 
 
 # --- montar_payload_carga: pedidos já enviados como pré-carga --------------
 
 
 def test_montar_payload_carga_pula_pedido_ja_coberto_por_pre_carga():
-    payload_carga, entregas_servico, avisos = service.montar_payload_carga(
+    payload_carga, entregas_servico, avisos, avisos_bloqueantes = service.montar_payload_carga(
         DETALHE,
         [ITEM],
         {26623: CLIENTE},
@@ -973,16 +1032,88 @@ def test_montar_payload_carga_pula_pedido_ja_coberto_por_pre_carga():
     assert payload_carga["cargas"][0]["entregas_carga"] == []
     assert entregas_servico == []
     assert any("já enviado ao Fusion como pré-carga" in a for a in avisos)
+    # Não bloqueante — já coberto por outro canal, não é um erro: uma
+    # carga 100% assim deve poder ser marcada enviada sem chamar o Fusion
+    # (ver processar_envio), não ficar travada em "pendente" pra sempre.
+    assert avisos_bloqueantes == []
 
 
 def test_montar_payload_carga_sem_exclusao_envia_tudo_normalmente():
-    payload_carga, entregas_servico, avisos = service.montar_payload_carga(
+    payload_carga, entregas_servico, avisos, avisos_bloqueantes = service.montar_payload_carga(
         DETALHE, [ITEM], {26623: CLIENTE}, MOTORISTA, VEICULO, pedidos_excluidos=None
     )
 
     assert len(payload_carga["entrega"]) == 1
     assert len(entregas_servico) == 1
     assert not any("pré-carga" in a for a in avisos)
+    assert avisos_bloqueantes == []
+
+
+def test_processar_envio_com_cobertura_parcial_de_pre_carga_envia_so_o_pedido_novo(conn):
+    """Carga com dois pedidos, um já coberto por pré-carga e outro novo —
+    o aviso informativo do pedido coberto não deve travar o envio do
+    pedido novo (a causa raiz do pedido do usuário: um aviso não
+    bloqueante bloqueando o resto da carga)."""
+    item_novo = {**ITEM, "IDPLANILHADOCORI": 999997, "IDORCAMENTO": 888888, "NUMSEQUENCIA": 2}
+    payload_carga, entregas_servico, avisos, avisos_bloqueantes = service.montar_payload_carga(
+        DETALHE, [ITEM, item_novo], {26623: CLIENTE}, MOTORISTA, VEICULO,
+        pedidos_excluidos={ITEM["IDPLANILHADOCORI"]},
+    )
+
+    assert any("já enviado ao Fusion como pré-carga" in a for a in avisos)
+    assert avisos_bloqueantes == []
+    assert len(payload_carga["entrega"]) == 1
+    assert payload_carga["entrega"][0]["pedido_erp"] == "888888_22099141"
+
+    fusion = FusionSaveCargaFalso(resultado={"success": "123", "errors": []})
+    saida = service.processar_envio(
+        conn, fusion, 3, 22099141, payload_carga, entregas_servico, avisos, avisos_bloqueantes,
+        clientes_por_idclifor={26623: CLIENTE},
+    )
+
+    assert saida["status"] == "enviada"
+    assert fusion.enviado == [payload_carga]
+    assert len(fusion.enviado_entrega_servico) == 1
+    assert fusion.enviado_entrega_servico[0]["pedido_erp"] == "888888_22099141"
+
+
+def test_processar_envio_carga_totalmente_coberta_por_pre_carga_nao_chama_o_fusion(conn):
+    """Carga cujo único pedido já foi enviado via pré-carga: nada de novo
+    pra mandar, marca enviada direto — sem essa guarda, uma carga 100%
+    resolvida por outro canal (pré-carga manual) ficaria travada em
+    "pendente" pra sempre, acumulando tentativas a cada reprocessamento
+    automático."""
+    payload_carga, entregas_servico, avisos, avisos_bloqueantes = service.montar_payload_carga(
+        DETALHE, [ITEM], {26623: CLIENTE}, MOTORISTA, VEICULO,
+        pedidos_excluidos={ITEM["IDPLANILHADOCORI"]},
+    )
+
+    fusion = FusionSaveCargaFalso()
+    saida = service.processar_envio(
+        conn, fusion, 3, 22099141, payload_carga, entregas_servico, avisos, avisos_bloqueantes,
+    )
+
+    assert saida["status"] == "enviada"
+    assert fusion.enviado is None
+    assert fusion.enviado_entrega_servico is None
+    assert saida["fila"]["status"] == "ENVIADA"
+
+
+def test_processar_envio_pre_carga_sem_nada_pra_enviar_nao_chama_o_fusion(conn):
+    """Mesmo shortcut do lado da pré-carga: nenhuma entrega no payload (por
+    qualquer motivo não bloqueante) marca enviada direto, sem chamar o
+    Fusion — crítico pro envio automático não gerar retry eterno."""
+    payload_carga = {"entrega": [], "cargas": [{"codigo_erp": "PC_2_796109"}]}
+
+    fusion = FusionSaveCargaFalso()
+    saida = service.processar_envio_pre_carga(
+        conn, fusion, 2, 796109, "PC_2_796109", None, None, None, None,
+        payload_carga, [], [], [],
+    )
+
+    assert saida["status"] == "enviada"
+    assert fusion.enviado is None
+    assert fusion.enviado_entrega_servico is None
 
 
 # --- pedidos_cobertos_por_pre_carga -----------------------------------------
@@ -1011,7 +1142,7 @@ def test_processar_envio_pre_carga_com_aviso_nao_chama_o_fusion(conn):
 
     saida = service.processar_envio_pre_carga(
         conn, fusion, 2, 796109, "PC_2_796109", "M-1", "Fulano", "V-1", "WOLKS",
-        {"cargas": [{}]}, [], ["sem motorista"],
+        {"entrega": [{"pedido_erp": "x"}], "cargas": [{}]}, [], ["sem motorista"], ["sem motorista"],
     )
 
     assert saida["status"] == "pendente"
@@ -1025,7 +1156,7 @@ def test_processar_envio_pre_carga_com_aviso_nao_chama_o_fusion(conn):
 
 def test_processar_envio_pre_carga_sem_fusion_configurado_enfileira(conn):
     saida = service.processar_envio_pre_carga(
-        conn, None, 2, 796109, "PC_2_796109", None, None, None, None, {"cargas": [{}]}, [], []
+        conn, None, 2, 796109, "PC_2_796109", None, None, None, None, {"entrega": [{"pedido_erp": "x"}], "cargas": [{}]}, [], [], []
     )
 
     assert saida["status"] == "pendente"
@@ -1037,7 +1168,7 @@ def test_processar_envio_pre_carga_feliz_marca_enviada(conn):
 
     saida = service.processar_envio_pre_carga(
         conn, fusion, 2, 796109, "PC_2_796109", None, None, None, None,
-        {"cargas": [{"codigo_erp": "PC_2_796109"}]}, [], [],
+        {"entrega": [{"pedido_erp": "x"}], "cargas": [{"codigo_erp": "PC_2_796109"}]}, [], [], [],
     )
 
     assert saida["status"] == "enviada"
@@ -1050,12 +1181,12 @@ def test_processar_envio_pre_carga_feliz_marca_enviada(conn):
 def test_processar_envio_pre_carga_ja_enviada_nao_chama_o_fusion_de_novo(conn):
     primeira = FusionSaveCargaFalso(resultado={"success": "123", "errors": []})
     service.processar_envio_pre_carga(
-        conn, primeira, 2, 796109, "PC_2_796109", None, None, None, None, {"cargas": [{}]}, [], []
+        conn, primeira, 2, 796109, "PC_2_796109", None, None, None, None, {"entrega": [{"pedido_erp": "x"}], "cargas": [{}]}, [], [], []
     )
 
     segunda = FusionSaveCargaFalso(resultado={"success": "123", "errors": []})
     saida = service.processar_envio_pre_carga(
-        conn, segunda, 2, 796109, "PC_2_796109", None, None, None, None, {"cargas": [{}]}, [], []
+        conn, segunda, 2, 796109, "PC_2_796109", None, None, None, None, {"entrega": [{"pedido_erp": "x"}], "cargas": [{}]}, [], [], []
     )
 
     assert saida["status"] == "ja_enviada"
@@ -1065,13 +1196,13 @@ def test_processar_envio_pre_carga_ja_enviada_nao_chama_o_fusion_de_novo(conn):
 def test_processar_envio_pre_carga_ja_enviada_com_forcar_chama_o_fusion(conn):
     primeira = FusionSaveCargaFalso(resultado={"success": "123", "errors": []})
     service.processar_envio_pre_carga(
-        conn, primeira, 2, 796109, "PC_2_796109", None, None, None, None, {"cargas": [{}]}, [], []
+        conn, primeira, 2, 796109, "PC_2_796109", None, None, None, None, {"entrega": [{"pedido_erp": "x"}], "cargas": [{}]}, [], [], []
     )
 
     segunda = FusionSaveCargaFalso(resultado={"success": "456", "errors": []})
-    payload_carga = {"cargas": [{"codigo_erp": "PC_2_796109"}]}
+    payload_carga = {"entrega": [{"pedido_erp": "x"}], "cargas": [{"codigo_erp": "PC_2_796109"}]}
     saida = service.processar_envio_pre_carga(
-        conn, segunda, 2, 796109, "PC_2_796109", None, None, None, None, payload_carga, [], [], forcar=True
+        conn, segunda, 2, 796109, "PC_2_796109", None, None, None, None, payload_carga, [], [], [], forcar=True
     )
 
     assert saida["status"] == "enviada"
@@ -1089,7 +1220,8 @@ def test_pre_cargas_ja_enviadas(conn):
         None,
         None,
         None,
-        {"cargas": [{}]},
+        {"entrega": [{"pedido_erp": "x"}], "cargas": [{}]},
+        [],
         [],
         [],
     )
@@ -1212,7 +1344,7 @@ def test_processar_envio_sincroniza_cliente_antes_do_entrega_servico(conn):
     fusion = FusionSaveCargaFalso(resultado={"success": "1", "errors": []})
 
     service.processar_envio(
-        conn, fusion, 3, 22099141, {"cargas": [{}]}, [{"pedido_erp": "x"}], [],
+        conn, fusion, 3, 22099141, {"entrega": [{"pedido_erp": "x"}], "cargas": [{}]}, [{"pedido_erp": "x"}], [], [],
         clientes_por_idclifor={26623: CLIENTE},
     )
 
@@ -1225,7 +1357,7 @@ def test_processar_envio_nao_resincroniza_cliente_ja_enviado(conn):
     fusion = FusionSaveCargaFalso(resultado={"success": "1", "errors": []})
 
     service.processar_envio(
-        conn, fusion, 3, 22099141, {"cargas": [{}]}, [{"pedido_erp": "x"}], [],
+        conn, fusion, 3, 22099141, {"entrega": [{"pedido_erp": "x"}], "cargas": [{}]}, [{"pedido_erp": "x"}], [], [],
         clientes_por_idclifor={26623: CLIENTE},
     )
 
@@ -1236,7 +1368,7 @@ def test_processar_envio_falha_ao_sincronizar_cliente_nao_chama_entrega_servico(
     fusion = FusionSaveCargaFalso(resultado_clientes={"msg": "cliente invalido"})
 
     saida = service.processar_envio(
-        conn, fusion, 3, 22099141, {"cargas": [{}]}, [{"pedido_erp": "x"}], [],
+        conn, fusion, 3, 22099141, {"entrega": [{"pedido_erp": "x"}], "cargas": [{}]}, [{"pedido_erp": "x"}], [], [],
         clientes_por_idclifor={26623: CLIENTE},
     )
 
@@ -1251,7 +1383,7 @@ def test_processar_envio_pre_carga_sincroniza_cliente(conn):
 
     service.processar_envio_pre_carga(
         conn, fusion, 2, 796109, "PC_2_796109", None, None, None, None,
-        {"cargas": [{}]}, [{"pedido_erp": "x"}], [],
+        {"entrega": [{"pedido_erp": "x"}], "cargas": [{}]}, [{"pedido_erp": "x"}], [], [],
         clientes_por_idclifor={26623: CLIENTE},
     )
 

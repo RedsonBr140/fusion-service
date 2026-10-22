@@ -384,6 +384,51 @@ pedido inteiro. Isso é intencional: o que importa pro Fusion é quanto
 está sendo enviado por este caminhão agora, não o valor total da venda
 original.
 
+### Aviso bloqueante vs. informativo — não travar a carga toda por um pedido já coberto
+
+Pergunta que motivou isto: se uma pré-carga já foi enviada manualmente e
+depois o CISS forma a carga de verdade a partir dela, a carga vai
+aparecer pra reenviar e duplicar no Fusion? Resposta curta: o pedido não
+duplica — `pedidos_cobertos_por_pre_carga`/`get_origem_pre_cargas_da_carga`
+já resolviam isso achando o `IDPRECARGA` original via
+`PRE_CARGA_PROD.IDPLANILHARETIRADA` e passando os `IDPLANILHADOCORI`
+correspondentes como `pedidos_excluidos` pra `montar_payload_carga` — um
+pedido excluído nunca entra em `entrega[]`/`entregas_servico`, então
+nunca vira uma segunda chamada de `saveCarga`/`saveEntregaServico` pro
+mesmo pedido.
+
+O problema era outro, e só importa pro **envio automático** (pré-carga
+continua manual): `_montar_payload` tratava **qualquer** aviso não vazio
+como bloqueio total do envio, inclusive o aviso puramente informativo
+`"Pedido {id} já enviado ao Fusion como pré-carga — não reenviado."` (e o
+já existente de pedido sem orçamento). Duas consequências ruins:
+
+1. Uma carga com cobertura **parcial** (um pedido já foi na pré-carga,
+   outro é novo) nunca enviava nem o pedido genuinamente novo — o aviso
+   do pedido já coberto travava a carga inteira.
+2. Uma carga **100% coberta** por pré-carga ficava presa em `PENDENTE`
+   pra sempre, incrementando `tentativas` a cada reprocessamento — nada
+   de errado está acontecendo (tudo que havia pra mandar já foi mandado
+   por outro canal), mas um sender automático reprocessaria isso
+   indefinidamente como falha.
+
+A correção: `_montar_payload` agora devolve um quarto valor,
+`avisos_bloqueantes` (subconjunto de `avisos`), via um helper interno
+`_aviso(texto, *, bloqueante=True)`. Só dois avisos são
+`bloqueante=False`: pedido já coberto por pré-carga, e pedido sem
+orçamento vinculado (D11, já era não bloqueante na intenção, nunca na
+implementação). A checagem de motorista/veículo ausente também passou a
+só rodar quando `entrega_stubs` não está vazio — sem nada pra anexar
+motorista/veículo, a ausência deles não é um problema de verdade.
+
+`processar_envio`/`processar_envio_pre_carga` ganharam um parâmetro
+`avisos_bloqueantes` e trocaram o gate de `if avisos:` para `if
+avisos_bloqueantes:` (a lista completa de `avisos` continua guardada na
+fila/motivo pra quem for olhar o que aconteceu). Logo depois do gate, um
+atalho novo: se `payload_carga["entrega"]` ficou vazio (nada pra mandar,
+e nada bloqueante), marca `ENVIADA` direto — `_marcar_enviada_na_fila`/
+`_marcar_enviada_na_fila_pre_carga` — sem chamar o Fusion nenhuma vez.
+
 ## Métodos do WSDL não implementados
 
 `atualizaCarga`/`cancelaCarga` (atualizar `dt_saida`/motorista/veículo ou
