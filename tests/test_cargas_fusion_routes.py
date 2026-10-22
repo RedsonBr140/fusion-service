@@ -369,6 +369,84 @@ def test_buscar_cargas_mostra_ja_enviadas_com_ocultar_enviadas_0(client, app, co
     assert {"IDEMPRESA": 1, "IDPLANILHA": 22099999} in cargas
 
 
+def test_buscar_cargas_marca_automaticamente_carga_totalmente_coberta_por_pre_carga(client, app, config):
+    """Uma carga cujo único pedido já foi enviado ao Fusion como pré-carga
+    não tem nada de novo pra decidir — a listagem marca ENVIADA direto
+    (sem chamar o Fusion) e some da lista padrão, sem precisar que
+    alguém abra a carga e clique "enviar" manualmente."""
+    from cargas_fusion import service
+
+    usuario_com_a_tool(client, config)
+    item = {
+        "IDPLANILHADOCORI": 22083047,
+        "IDORCAMENTO": 612442,
+        "IDSUBPRODUTO": 141624,
+        "NUMNOTA": 165858,
+        "SERIENOTA": "2",
+        "IDCLIFOR": 26623,
+        "IDCLIFORENTREGA": 26623,
+        "VALTOTLIQUIDO": 730.01,
+        "PESOBRUTO": 0.5,
+        "DESCRCOMPRODUTO": "ITEM",
+    }
+    app.config["CISS_DB_CLIENT"] = CissClientFalso(
+        cargas=[{"IDEMPRESA": 1, "IDPLANILHA": 22099141}],
+        itens=[item],
+        origem_pre_cargas={22083047: {99}},
+    )
+    conn = connect(config.database_path)
+    service._marcar_enviada_na_fila_pre_carga(conn, 1, 99, "PC_1_99", None, None, None, None)
+    conn.close()
+
+    resp = client.get(f"{PREFIXO}/cargas?data_inicial=2026-10-01T00:00:00&data_final=2026-10-14T00:00:00")
+
+    assert resp.status_code == 200
+    assert resp.get_json()["cargas"] == []
+
+    conn = connect(config.database_path)
+    assert service.cargas_ja_enviadas(conn) == {(1, 22099141)}
+    conn.close()
+
+
+def test_buscar_cargas_nao_marca_carga_parcialmente_coberta(client, app, config):
+    """Mesma carga, mas com um segundo pedido que não veio de pré-carga
+    nenhuma — ainda há algo de novo pra decidir, então a listagem não
+    marca nada automaticamente e a carga continua pendente."""
+    from cargas_fusion import service
+
+    usuario_com_a_tool(client, config)
+    item_coberto = {
+        "IDPLANILHADOCORI": 22083047,
+        "IDORCAMENTO": 612442,
+        "IDSUBPRODUTO": 141624,
+        "NUMNOTA": 165858,
+        "SERIENOTA": "2",
+        "IDCLIFOR": 26623,
+        "IDCLIFORENTREGA": 26623,
+        "VALTOTLIQUIDO": 730.01,
+        "PESOBRUTO": 0.5,
+        "DESCRCOMPRODUTO": "ITEM COBERTO",
+    }
+    item_novo = {**item_coberto, "IDPLANILHADOCORI": 999997, "IDORCAMENTO": 888888}
+    app.config["CISS_DB_CLIENT"] = CissClientFalso(
+        cargas=[{"IDEMPRESA": 1, "IDPLANILHA": 22099141}],
+        itens=[item_coberto, item_novo],
+        origem_pre_cargas={22083047: {99}},
+    )
+    conn = connect(config.database_path)
+    service._marcar_enviada_na_fila_pre_carga(conn, 1, 99, "PC_1_99", None, None, None, None)
+    conn.close()
+
+    resp = client.get(f"{PREFIXO}/cargas?data_inicial=2026-10-01T00:00:00&data_final=2026-10-14T00:00:00")
+
+    assert resp.status_code == 200
+    assert resp.get_json()["cargas"] == [{"IDEMPRESA": 1, "IDPLANILHA": 22099141}]
+
+    conn = connect(config.database_path)
+    assert service.cargas_ja_enviadas(conn) == set()
+    conn.close()
+
+
 def test_buscar_cargas_nao_confunde_mesmo_idplanilha_de_empresas_diferentes(client, app, config):
     """Achado ao vivo: 9_22104238 e 2_22104238 coexistem (mesmo IDPLANILHA,
     empresas diferentes). Resolver só pelo IDPLANILHA faria a carga vazia

@@ -429,6 +429,23 @@ atalho novo: se `payload_carga["entrega"]` ficou vazio (nada pra mandar,
 e nada bloqueante), marca `ENVIADA` direto — `_marcar_enviada_na_fila`/
 `_marcar_enviada_na_fila_pre_carga` — sem chamar o Fusion nenhuma vez.
 
+Esse atalho só rodava quando alguém chamava `processar_envio` de verdade
+— ou seja, só depois de abrir a carga e clicar "enviar" manualmente. Uma
+carga 100% coberta por pré-carga continuava aparecendo como pendente na
+listagem (`GET /api/cargas`) até alguém fazer esse clique, mesmo não
+havendo nada de fato pra decidir. `marcar_carga_coberta_automaticamente`
+(`cargas_fusion/service.py`) resolve isso na própria listagem: pra cada
+carga ainda não marcada `ENVIADA`, busca os itens de verdade e a origem
+de pré-carga, monta o payload (com `clientes_por_idclifor={}` e
+motorista/veículo `None` — seguro aqui porque essas checagens só rodam
+pra um pedido que não foi pulado; se `entrega` ficar vazio, nenhum pedido
+chegou lá) e, só se `entrega` vazio e nada bloqueante, chama
+`processar_envio` (com `fusion_client=None`, também seguro: o atalho de
+"nada pra enviar" roda antes de qualquer checagem que precisasse do
+client de verdade) pra marcar `ENVIADA` e tirar a carga da lista sem
+esperar ação manual. Nunca dispara envio real ao Fusion a partir da
+listagem — só decide o caso em que não há nada genuíno pra enviar.
+
 ## Métodos do WSDL não implementados
 
 `atualizaCarga`/`cancelaCarga` (atualizar `dt_saida`/motorista/veículo ou

@@ -1346,6 +1346,47 @@ def pedidos_cobertos_por_pre_carga(
     return {pedido for pedido, precargas in origem_por_pedido.items() if precargas & enviadas}
 
 
+def marcar_carga_coberta_automaticamente(
+    conn: sqlite3.Connection,
+    id_empresa: int,
+    id_planilha: int,
+    detalhe: Mapping[str, object],
+    itens: Sequence[Mapping[str, object]],
+    origem_por_pedido: Mapping[int, set[int]],
+) -> dict | None:
+    """Chamado na listagem de cargas (não só quando alguém abre/envia uma
+    carga): se, com os itens de verdade, esta carga não tem **nenhuma**
+    entrega genuína pra mandar — todo pedido já foi resolvido por outro
+    canal (pré-carga `ENVIADA`) ou não tem orçamento vinculado (D11), e
+    nada bloqueante sobrou — marca `ENVIADA` direto e devolve o resultado
+    de `processar_envio`. Sem isso, uma carga 100% coberta por pré-carga
+    ficava visível na listagem como pendente até alguém abrir e clicar
+    "enviar" manualmente, mesmo não havendo nada de fato pra decidir.
+
+    `clientes_por_idclifor={}`/motorista/veículo `None` são seguros aqui
+    mesmo sem dado real: o aviso de cliente não encontrado só é gerado
+    pra um pedido que *não* foi pulado (ver `_montar_payload`) — se o
+    resultado tem `entrega` vazio, nenhum pedido chegou a essa checagem,
+    então o dict de clientes vazio nunca gera um bloqueio falso. Se
+    `entrega` não ficar vazio, a função devolve `None` sem marcar nada
+    (não é a hora de decidir isso aqui) — `fusion_client=None` no
+    `processar_envio` abaixo também é seguro pelo mesmo motivo: o atalho
+    de "nada pra enviar, marca enviada" roda antes de qualquer checagem
+    que precise do client de verdade.
+    """
+    if not itens:
+        return None
+    pedidos_excluidos = pedidos_cobertos_por_pre_carga(conn, origem_por_pedido)
+    payload_carga, entregas_servico, avisos, avisos_bloqueantes = montar_payload_carga(
+        detalhe, itens, {}, None, None, pedidos_excluidos=pedidos_excluidos
+    )
+    if payload_carga["entrega"] or avisos_bloqueantes:
+        return None
+    return processar_envio(
+        conn, None, id_empresa, id_planilha, payload_carga, entregas_servico, avisos, avisos_bloqueantes
+    )
+
+
 def _registrar_falha_na_fila_pre_carga(
     conn: sqlite3.Connection,
     id_empresa: int,

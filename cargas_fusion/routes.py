@@ -211,9 +211,38 @@ def buscar_cargas():
     except CissDbError:
         return jsonify({"error": MSG_CISS_INDISPONIVEL}), 503
 
+    ja_enviadas = service.cargas_ja_enviadas(get_db())
+    pendentes = [carga for carga in cargas if (carga["IDEMPRESA"], carga["IDPLANILHA"]) not in ja_enviadas]
+
+    # Uma carga cujos pedidos já foram todos enviados ao Fusion como
+    # pré-carga não tem nada de novo pra decidir — marca ENVIADA aqui
+    # mesmo, sem esperar alguém abrir a carga e clicar "enviar" (ver
+    # CLAUDE.md, "Aviso bloqueante vs. informativo"). `marcar_carga_
+    # coberta_automaticamente` só marca quando não há nada bloqueante e
+    # nenhuma entrega genuína sobrou — nunca dispara envio real ao Fusion
+    # a partir da listagem.
+    recem_marcadas: set[tuple[int, int]] = set()
+    try:
+        for carga in pendentes:
+            id_empresa_carga = carga["IDEMPRESA"]
+            id_planilha_carga = carga["IDPLANILHA"]
+            itens = client.get_itens_carga(id_empresa_carga, id_planilha_carga)
+            origem_por_pedido = client.get_origem_pre_cargas_da_carga(id_empresa_carga, id_planilha_carga)
+            resultado = service.marcar_carga_coberta_automaticamente(
+                get_db(), id_empresa_carga, id_planilha_carga, carga, itens, origem_por_pedido
+            )
+            if resultado is not None:
+                recem_marcadas.add((id_empresa_carga, id_planilha_carga))
+    except CissDbError:
+        return jsonify({"error": MSG_CISS_INDISPONIVEL}), 503
+
     if ocultar_enviadas:
-        ja_enviadas = service.cargas_ja_enviadas(get_db())
-        cargas = [carga for carga in cargas if (carga["IDEMPRESA"], carga["IDPLANILHA"]) not in ja_enviadas]
+        cargas = [
+            carga
+            for carga in cargas
+            if (carga["IDEMPRESA"], carga["IDPLANILHA"]) not in ja_enviadas
+            and (carga["IDEMPRESA"], carga["IDPLANILHA"]) not in recem_marcadas
+        ]
 
     return jsonify({"cargas": cargas}), 200
 
