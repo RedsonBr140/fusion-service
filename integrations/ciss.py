@@ -370,7 +370,14 @@ class CissClient:
         valor/peso de todo item que `get_itens_carga` devolver — por isso
         o corte é aqui, não lá: um item de local sem a integração nunca
         foi carregado no caminhão desta carga, não devia contar no peso
-        nem no valor "enviado" que o Fusion recebe."""
+        nem no valor "enviado" que o Fusion recebe.
+
+        `VALUNITBRUTO`: preço unitário de catálogo (bruto, antes do
+        desconto), fonte real pro `preco` do item — ver `_preco_item` em
+        `cargas_fusion/service.py`. `VALTOTLIQUIDO` continua sendo o
+        `subtotal` (líquido, o que de fato foi cobrado); os dois virem de
+        colunas diferentes da mesma linha de `ESTOQUE_ANALITICO` é
+        esperado quando há desconto — não é inconsistência."""
         return self._fetch_all(
             "SELECT "
             "PR.NUMSEQUENCIA, "
@@ -381,6 +388,7 @@ class CissClient:
             "NES.IDOPERACAO, NES.IDCLIFORENTREGA, "
             "CF_CLI.NOME AS NOME_CLIENTE, "
             "CAST(EA.VALTOTLIQUIDO AS DOUBLE) AS VALTOTLIQUIDO, "
+            "CAST(EA.VALUNITBRUTO AS DOUBLE) AS VALUNITBRUTO, "
             "CAST(EA.PESOBRUTO AS DOUBLE) AS PESOBRUTO, "
             "EA.IDVENDEDOR, "
             "P.DESCRCOMPRODUTO, "
@@ -460,7 +468,8 @@ class CissClient:
         Mesmo filtro por item de `get_itens_carga` — só item de local de
         retirada com a integração Fusion marcada, via `IDPONTORETIRADA`
         (mesmo espaço de id de `LOCAL_RETIRADA.IDLOCALRETIRADA`, nome de
-        coluna diferente — ver `_FILTRO_FUSION_PRE_CARGA`)."""
+        coluna diferente — ver `_FILTRO_FUSION_PRE_CARGA`). `VALUNITBRUTO`:
+        ver a nota em `get_itens_carga`."""
         return self._fetch_all(
             "SELECT "
             "ROW_NUMBER() OVER (ORDER BY PCP.IDPLANILHAVENDA, PCP.IDPRODUTO, "
@@ -474,6 +483,7 @@ class CissClient:
             "NES.IDOPERACAO, "
             "CF_CLI.NOME AS NOME_CLIENTE, "
             "CAST(EA.VALTOTLIQUIDO AS DOUBLE) AS VALTOTLIQUIDO, "
+            "CAST(EA.VALUNITBRUTO AS DOUBLE) AS VALUNITBRUTO, "
             "CAST(EA.PESOBRUTO AS DOUBLE) AS PESOBRUTO, "
             "EA.IDVENDEDOR, "
             "P.DESCRCOMPRODUTO, "

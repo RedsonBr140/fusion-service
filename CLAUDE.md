@@ -517,11 +517,29 @@ as duas colunas quando faltam (`veiculo_id` fica, sem uso — sqlite3 não
 tem `DROP COLUMN` barato, e não há dado nela que valha migrar). Qualquer
 coluna renomeada (não só nova) em `schema.sql` precisa do mesmo cuidado.
 
+## Preço dos itens: `preco` (unitário) vs. `subtotal` (líquido da linha)
+
+Resolvida a pendência que existia aqui (`preco` derivado de
+`VALTOTLIQUIDO / QTDPRODUTO`, sem fonte unitária confirmada): existe uma
+coluna de preço unitário de verdade em `ESTOQUE_ANALITICO` —
+`VALUNITBRUTO`, confirmada contra o catálogo do DB2 e contra produção
+(carga `1_22142248`). `_preco_item` (`cargas_fusion/service.py`) usa essa
+coluna pra `preco`; `subtotal` continua vindo de `VALTOTLIQUIDO`, como
+antes.
+
+**Os dois vêm de bases diferentes — bruto vs. líquido — de propósito.**
+`VALUNITBRUTO` é o preço de catálogo (antes do desconto da venda);
+`VALTOTLIQUIDO` é o valor líquido de fato cobrado na linha. Confirmado em
+produção que a diferença é sistemática (desconto de ~10% em toda a
+amostra testada, não ruído) — `preco × qtd` não bater com `subtotal`
+quando há desconto é esperado, do mesmo jeito que numa nota fiscal
+comum. Fallback pro cálculo antigo (`VALTOTLIQUIDO / QTDPRODUTO`) quando
+`VALUNITBRUTO` vem `NULL`/zero — confirmado que isso acontece numa fração
+pequena das linhas (~0.45% de uma amostra de 10.7M linhas de
+`ESTOQUE_ANALITICO`, mesma taxa de ausência de `VALTOTLIQUIDO`).
+
 ## Pendências de dado conhecidas
 
-- `preco`/`subtotal` dos itens de `saveEntregaServico`: `subtotal` vem de
-  `VALTOTLIQUIDO`, `preco` é derivado (`VALTOTLIQUIDO / QTDPRODUTO`) — sem
-  fonte unitária confirmada independente desse cálculo.
 - Praça/rota reais (ver acima) — placeholder funciona, sem fonte no CISS.
 - Campos de filial do stub de `saveCarga` só testados com filial de teste;
   não testado se um cliente real (CPF/CNPJ, endereço) exige mais campos no

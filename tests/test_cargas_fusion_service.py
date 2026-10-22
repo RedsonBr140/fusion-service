@@ -345,6 +345,27 @@ def test_peso_item_sem_fonte_nenhuma_e_zero():
     assert service._peso_item({"PESOBRUTO": None, "PRODUTO_PESOBRUTO": None, "QTDPRODUTO": 4.0}) == 0
 
 
+def test_preco_item_usa_valunitbruto_quando_disponivel():
+    """Achado em produção (carga 1_22142248): VALUNITBRUTO (preço de
+    catálogo, bruto) é consistentemente maior que VALTOTLIQUIDO/QTDPRODUTO
+    (a média líquida que o cálculo antigo usava) — a diferença é o
+    desconto aplicado na venda, não um erro."""
+    item = {"VALUNITBRUTO": 20.99, "VALTOTLIQUIDO": 74.0, "QTDPRODUTO": 4.0}
+    assert service._preco_item(item) == 20.99
+
+
+def test_preco_item_cai_pro_calculo_antigo_sem_valunitbruto():
+    """VALUNITBRUTO vem NULL/zero numa fração pequena das linhas (mesma
+    taxa de ausência de VALTOTLIQUIDO, ~0.45% — confirmado contra
+    ESTOQUE_ANALITICO de produção) — cai pro cálculo antigo em vez de
+    mandar preço zerado."""
+    item = {"VALUNITBRUTO": 0.0, "VALTOTLIQUIDO": 74.0, "QTDPRODUTO": 4.0}
+    assert service._preco_item(item) == 18.5
+
+    item_sem_coluna = {"VALTOTLIQUIDO": 74.0, "QTDPRODUTO": 4.0}
+    assert service._preco_item(item_sem_coluna) == 18.5
+
+
 DETALHE = {
     "IDEMPRESA": 3,
     "IDPLANILHA": 22099141,
@@ -363,6 +384,7 @@ ITEM = {
     "IDCLIFOR": 26623,
     "IDCLIFORENTREGA": 26623,
     "VALTOTLIQUIDO": 730.01,
+    "VALUNITBRUTO": 811.12,
     "PESOBRUTO": 0.5,
     "DESCRCOMPRODUTO": "MINI CHURRASQUEIRA PRE MOLDADO TIJOLINHO COM BALCAO VERMELHA",
 }
@@ -441,7 +463,7 @@ def test_montar_payload_carga_monta_entrega_e_carga():
             "cod_produto_erp": "141624",
             "qtd": "0.000",
             "peso": "0.500",
-            "preco": "730.010",
+            "preco": "811.120",
             "subtotal": "730.010",
             "descricao": "MINI CHURRASQUEIRA PRE MOLDADO TIJOLINHO COM BALCAO VERMELHA",
         }

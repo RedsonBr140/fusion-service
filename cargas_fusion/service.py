@@ -89,6 +89,27 @@ def _peso_item(item: Mapping[str, object]) -> float:
     return peso_catalogo * qtd
 
 
+def _preco_item(item: Mapping[str, object]) -> float:
+    """O preço unitário de uma linha de `get_itens_carga`/`get_itens_pre_carga`
+    — `ESTOQUE_ANALITICO.VALUNITBRUTO`, o preço de catálogo (bruto, antes
+    do desconto). Antes desta coluna entrar no retorno do CISS, `preco`
+    era derivado (`VALTOTLIQUIDO / QTDPRODUTO`) — uma média líquida, não
+    um preço de verdade, e sem fonte unitária confirmada independente
+    desse cálculo (pendência documentada no CLAUDE.md). `subtotal`
+    continua vindo de `VALTOTLIQUIDO` (líquido, o que de fato foi
+    cobrado) — `preco × qtd` não bater com `subtotal` quando há desconto
+    é esperado, não uma inconsistência a corrigir.
+
+    Fallback pro cálculo antigo quando `VALUNITBRUTO` vem `NULL`/zero
+    (confirmado em produção: ~0.45% das linhas de `ESTOQUE_ANALITICO`,
+    mesma taxa de ausência que `VALTOTLIQUIDO` — não vale a pena mandar
+    "0.000" de preço quando dá pra aproximar.)"""
+    preco_catalogo = _numero(item.get("VALUNITBRUTO")) or 0
+    if preco_catalogo:
+        return preco_catalogo
+    return (_numero(item.get("VALTOTLIQUIDO")) or 0) / (_numero(item.get("QTDPRODUTO")) or 1)
+
+
 # --- Veículo: lido ao vivo do Fusion ---------------------------------------
 # Sem cadastro local (mesma mudança de motorista, 2026-10-20): fusion-py já
 # tem o lado do veículo resolvido (`FusionClient.buscar_veiculos`, grade
@@ -801,11 +822,10 @@ def _montar_payload(
                         # obrigatórios ("Campos obrigatorios (preco,
                         # subtotal) dos itens"). VALTOTLIQUIDO (já usado
                         # acima para valor_total) é o subtotal da própria
-                        # linha; preco é o unitário derivado dele —
+                        # linha; preco é o unitário de catálogo, via
+                        # _preco_item (ESTOQUE_ANALITICO.VALUNITBRUTO) —
                         # _numero_informado por causa da mesma quirk do "0".
-                        "preco": _numero_informado(
-                            (_numero(i.get("VALTOTLIQUIDO")) or 0) / (_numero(i.get("QTDPRODUTO")) or 1)
-                        ),
+                        "preco": _numero_informado(_preco_item(i)),
                         "subtotal": _numero_informado(_numero(i.get("VALTOTLIQUIDO")) or 0),
                         "descricao": _texto(i.get("DESCRCOMPRODUTO")) or "",
                     }
