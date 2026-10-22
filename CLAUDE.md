@@ -446,6 +446,50 @@ client de verdade) pra marcar `ENVIADA` e tirar a carga da lista sem
 esperar ação manual. Nunca dispara envio real ao Fusion a partir da
 listagem — só decide o caso em que não há nada genuíno pra enviar.
 
+## Entrega entre filiais: item pode estar sob um `IDEMPRESA` diferente do cabeçalho da carga
+
+Achado em produção (carga `2_22144917`, reportada pelo usuário como "não
+aparece na integração"): o cabeçalho da carga (`RETIRADA_PRODUTOS`) existe
+sob `IDEMPRESA=2`, mas o único item (`PRODUTO_RETIRADO`) daquele
+`IDPLANILHA` está gravado sob `IDEMPRESA=1` — sem nenhuma linha de
+`PRODUTO_RETIRADO` sob `IDEMPRESA=2` pra essa carga. **Confirmado com o
+usuário que isso é esperado** — entrega entre filiais, não erro de
+cadastro: o item físico foi baixado do estoque de uma filial, mas a
+viagem/carga pertence a outra. Não é raro — amostra desde o corte de
+integração encontrou milhares de cargas nesse padrão (ex. cabeçalho
+empresa 9 / item empresa 2: 1539 casos; cabeçalho 6 / item 1: 479 casos).
+
+Toda consulta que faz `PRODUTO_RETIRADO.IDEMPRESA = <empresa do
+cabeçalho>` escondia essas cargas inteiras (zero itens resolvidos) da
+integração — `get_itens_carga`, `_FILTRO_FUSION_CARGA` (usado por
+`get_cargas`), `get_cargas_com_pedido_resolvido`,
+`get_origem_pre_cargas_da_carga`, `get_carga_por_pedido` e
+`get_carga_por_nota`, todos em `integrations/ciss.py`.
+
+`PRODUTO_RETIRADO.IDEMPRESABAIXAEST` (a empresa de onde o estoque foi
+baixado) é a coluna que de fato liga o item ao cabeçalho nesses casos —
+bate com `IDEMPRESA` do cabeçalho exatamente na carga `2_22144917`
+(timestamps de `DTMOVIMENTO` do cabeçalho e do item batem a poucos
+milissegundos), e em 71% de uma amostra de 3467 cargas cross-empresa
+desde o corte de integração. Os outros 29% não foram investigados a
+fundo — o fix aplicado (`PR.IDEMPRESA = ? OR PR.IDEMPRESABAIXAEST = ?`
+em todo lugar que antes só tinha `PR.IDEMPRESA = ?`) cobre a maioria sem
+piorar nada: nunca remove uma condição, só adiciona uma alternativa.
+
+`get_carga_por_pedido`/`get_carga_por_nota` devolvem sempre o `IDEMPRESA`
+do **cabeçalho** (`RP.IDEMPRESA`, resolvido via o mesmo `OR`), nunca o do
+item (`PR.IDEMPRESA`) — devolver o do item quebraria a navegação
+("busca por documento" apontaria pra um par `(IDEMPRESA, IDPLANILHA)`
+sem cabeçalho nenhum em `RETIRADA_PRODUTOS`, 404 na tela de carga).
+
+**Dívida técnica conhecida**: os ~29% de cargas cross-empresa onde nem
+`IDEMPRESA` nem `IDEMPRESABAIXAEST` do item batem com o cabeçalho
+continuam invisíveis. Não investigado qual é a ligação certa nesses
+casos — pode ser um terceiro campo, pode ser timing (o item sendo
+anexado à carga depois que a venda já mudou de contexto), ou pode ser
+genuinamente outro padrão de negócio. Revisitar se mais relatos de
+"carga não aparece" surgirem.
+
 ## Métodos do WSDL não implementados
 
 `atualizaCarga`/`cancelaCarga` (atualizar `dt_saida`/motorista/veículo ou

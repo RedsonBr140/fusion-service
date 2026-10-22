@@ -199,10 +199,20 @@ class CissClient:
     # sem motorista/veículo/entrega nenhuma, nunca deveriam aparecer aqui.
     # Uma carga nunca mistura locais com flags diferentes (confirmado
     # contra a mesma amostra) — EXISTS evita duplicar linha por item.
+    # PR_FUS.IDEMPRESA = RP.IDEMPRESA OR PR_FUS.IDEMPRESABAIXAEST = RP.IDEMPRESA:
+    # achado em produção (carga 2_22144917, empresa confirmada pelo
+    # usuário como cenário válido de entrega entre filiais) — o item pode
+    # estar gravado sob um IDEMPRESA diferente do cabeçalho da carga
+    # (RETIRADA_PRODUTOS), mas IDEMPRESABAIXAEST (a empresa de onde o
+    # estoque foi baixado) bate com o cabeçalho na maioria desses casos
+    # (71% de uma amostra de 3467 cargas cross-empresa desde o corte de
+    # integração) — exigir só PR.IDEMPRESA = RP.IDEMPRESA escondia essas
+    # cargas inteiras da integração.
     _FILTRO_FUSION_CARGA = (
         "AND EXISTS (SELECT 1 FROM PRODUTO_RETIRADO PR_FUS "
         "JOIN LOCAL_RETIRADA LR_FUS ON LR_FUS.IDLOCALRETIRADA = PR_FUS.IDLOCALRETIRADA "
-        "WHERE PR_FUS.IDEMPRESA = RP.IDEMPRESA AND PR_FUS.IDPLANILHA = RP.IDPLANILHA "
+        "WHERE (PR_FUS.IDEMPRESA = RP.IDEMPRESA OR PR_FUS.IDEMPRESABAIXAEST = RP.IDEMPRESA) "
+        "AND PR_FUS.IDPLANILHA = RP.IDPLANILHA "
         "AND LR_FUS.FLAGUTILIZAINTEGRACAOFUSION = 'T') "
     )
     # PRE_CARGA_PROD usa IDPONTORETIRADA, não IDLOCALRETIRADA — mesmo
@@ -281,7 +291,12 @@ class CissClient:
         self, cargas: Sequence[tuple[int, int]]
     ) -> set[tuple[int, int]]:
         """`(IDEMPRESA, IDPLANILHA)` das cargas com pelo menos um item com
-        `IDORCAMENTO` resolvido via `ORCAMENTO_PRE_NOTA`.
+        `IDORCAMENTO` resolvido via `ORCAMENTO_PRE_NOTA`. `IDEMPRESA` aqui
+        é sempre o do **cabeçalho** (`RETIRADA_PRODUTOS`), o par que
+        `cargas` recebe — o item pode estar gravado sob um `IDEMPRESA`
+        diferente (entrega entre filiais — ver `_FILTRO_FUSION_CARGA`),
+        por isso o `OR` com `IDEMPRESABAIXAEST` na condição, mas o valor
+        devolvido é sempre o par original recebido, nunca o do item.
 
         `IDPLANILHA` sozinho não é chave — filtro por par via `OR` de pares
         parametrizados, não `IN` de tupla composta (não portável entre
@@ -290,10 +305,17 @@ class CissClient:
         if not cargas:
             return set()
 
-        condicoes = " OR ".join(["(PR.IDEMPRESA = ? AND PR.IDPLANILHA = ?)"] * len(cargas))
-        params = [valor for id_empresa, id_planilha in cargas for valor in (id_empresa, id_planilha)]
+        condicoes = " OR ".join(
+            ["((PR.IDEMPRESA = ? OR PR.IDEMPRESABAIXAEST = ?) AND PR.IDPLANILHA = ?)"] * len(cargas)
+        )
+        params = [
+            valor
+            for id_empresa, id_planilha in cargas
+            for valor in (id_empresa, id_empresa, id_planilha)
+        ]
+        pares = {(id_empresa, id_planilha) for id_empresa, id_planilha in cargas}
         linhas = self._fetch_all(
-            "SELECT DISTINCT PR.IDEMPRESA, PR.IDPLANILHA "
+            "SELECT DISTINCT PR.IDEMPRESA, PR.IDEMPRESABAIXAEST, PR.IDPLANILHA "
             "FROM PRODUTO_RETIRADO PR "
             "JOIN ORCAMENTO_PRE_NOTA OPN "
             "  ON OPN.IDEMPRESAPRENOTA = PR.IDEMPRESA AND OPN.IDPLANILHAPRENOTA = PR.IDPLANILHADOCORI "
@@ -301,7 +323,12 @@ class CissClient:
             "FOR READ ONLY",
             tuple(params),
         )
-        return {(linha["IDEMPRESA"], linha["IDPLANILHA"]) for linha in linhas}
+        resolvidas: set[tuple[int, int]] = set()
+        for linha in linhas:
+            for candidato in ((linha["IDEMPRESA"], linha["IDPLANILHA"]), (linha["IDEMPRESABAIXAEST"], linha["IDPLANILHA"])):
+                if candidato in pares:
+                    resolvidas.add(candidato)
+        return resolvidas
 
     def get_carga_detalhe(self, id_empresa: int, id_planilha: int) -> dict[str, object] | None:
         """A carga inteira, inclusive a observação (CLOB truncado — ver
@@ -321,13 +348,19 @@ class CissClient:
         `IDPLANILHADOCORI` — a pré-nota, ver D11 em `get_itens_carga`) —
         mesma cadeia de junção via `ORCAMENTO_PRE_NOTA`. Um pedido pode
         reaparecer em mais de uma carga histórica (redespacho) — devolve a
-        mais recente por `DTALTERACAO`."""
+        mais recente por `DTALTERACAO`.
+
+        Devolve o `IDEMPRESA` do **cabeçalho** (`RP.IDEMPRESA`), nunca o
+        do item (`PR.IDEMPRESA`) — numa entrega entre filiais os dois
+        divergem (ver `_FILTRO_FUSION_CARGA`), e é o cabeçalho que a tela
+        de carga (`ver_carga`) precisa pra existir."""
         linha = self._fetch_one(
-            "SELECT PR.IDEMPRESA, PR.IDPLANILHA "
+            "SELECT RP.IDEMPRESA, RP.IDPLANILHA "
             "FROM PRODUTO_RETIRADO PR "
             "JOIN ORCAMENTO_PRE_NOTA OPN "
             "  ON OPN.IDEMPRESAPRENOTA = PR.IDEMPRESA AND OPN.IDPLANILHAPRENOTA = PR.IDPLANILHADOCORI "
-            "JOIN RETIRADA_PRODUTOS RP ON RP.IDEMPRESA = PR.IDEMPRESA AND RP.IDPLANILHA = PR.IDPLANILHA "
+            "JOIN RETIRADA_PRODUTOS RP ON RP.IDPLANILHA = PR.IDPLANILHA "
+            "  AND (RP.IDEMPRESA = PR.IDEMPRESA OR RP.IDEMPRESA = PR.IDEMPRESABAIXAEST) "
             "WHERE OPN.IDORCAMENTO = ? "
             "ORDER BY RP.DTALTERACAO DESC "
             "FETCH FIRST 1 ROWS ONLY",
@@ -338,15 +371,20 @@ class CissClient:
     def get_carga_por_nota(self, numnota: int, serienota: str) -> tuple[int, int] | None:
         """A carga que carrega esta NF real — mesma cadeia de junção via
         `PRODUTO_RETIRADO_NOTAS`/`NOTAS` que `get_itens_carga` usa (D11:
-        não é a mesma coisa que `IDPLANILHADOCORI`)."""
+        não é a mesma coisa que `IDPLANILHADOCORI`).
+
+        Devolve o `IDEMPRESA` do cabeçalho (`RP.IDEMPRESA`) — ver a mesma
+        nota em `get_carga_por_pedido`."""
         linha = self._fetch_one(
-            "SELECT PR.IDEMPRESA, PR.IDPLANILHA "
+            "SELECT RP.IDEMPRESA, RP.IDPLANILHA "
             "FROM PRODUTO_RETIRADO PR "
             "JOIN PRODUTO_RETIRADO_NOTAS PRN "
             "  ON PRN.IDEMPRESA = PR.IDEMPRESA AND PRN.IDPLANILHA = PR.IDPLANILHA "
             " AND PRN.IDPRODUTO = PR.IDPRODUTO AND PRN.IDSUBPRODUTO = PR.IDSUBPRODUTO "
             " AND PRN.NUMSEQUENCIA = PR.NUMSEQUENCIA "
             "JOIN NOTAS N ON N.IDPLANILHA = PRN.IDPLANILHANOTA AND N.IDEMPRESA = PRN.IDEMPRESANOTA "
+            "JOIN RETIRADA_PRODUTOS RP ON RP.IDPLANILHA = PR.IDPLANILHA "
+            "  AND (RP.IDEMPRESA = PR.IDEMPRESA OR RP.IDEMPRESA = PR.IDEMPRESABAIXAEST) "
             "WHERE N.NUMNOTA = ? AND N.SERIENOTA = ? "
             "FETCH FIRST 1 ROWS ONLY",
             (numnota, serienota),
@@ -371,6 +409,15 @@ class CissClient:
         o corte é aqui, não lá: um item de local sem a integração nunca
         foi carregado no caminhão desta carga, não devia contar no peso
         nem no valor "enviado" que o Fusion recebe.
+
+        `id_empresa` é o do **cabeçalho** (`RETIRADA_PRODUTOS`), não
+        necessariamente o do item — achado em produção (carga
+        `2_22144917`, confirmado como cenário válido de entrega entre
+        filiais): o item pode estar gravado sob um `PR.IDEMPRESA`
+        diferente do cabeçalho, mas `PR.IDEMPRESABAIXAEST` (a empresa de
+        onde o estoque foi baixado) bate com o cabeçalho na maioria desses
+        casos — por isso o `OR` na condição. Exigir só `PR.IDEMPRESA =
+        id_empresa` escondia a carga inteira (zero itens) da integração.
 
         `VALUNITBRUTO`: preço unitário de catálogo (bruto, antes do
         desconto), fonte real pro `preco` do item — ver `_preco_item` em
@@ -416,9 +463,9 @@ class CissClient:
             "LEFT JOIN PRODUTO P ON P.IDPRODUTO = PG.IDPRODUTO "
             "LEFT JOIN CLIENTE_FORNECEDOR CF_CLI "
             "  ON CF_CLI.IDCLIFOR = COALESCE(NES.IDCLIFORENTREGA, N.IDCLIFOR) "
-            "WHERE PR.IDPLANILHA = ? AND PR.IDEMPRESA = ? "
+            "WHERE PR.IDPLANILHA = ? AND (PR.IDEMPRESA = ? OR PR.IDEMPRESABAIXAEST = ?) "
             "ORDER BY PR.NUMSEQUENCIA",
-            (id_planilha, id_empresa),
+            (id_planilha, id_empresa, id_empresa),
         )
 
     def get_pre_cargas(
@@ -515,15 +562,23 @@ class CissClient:
         """Para cada pedido (`IDPLANILHADOCORI`) desta carga já formada, as
         pré-cargas de onde seus itens vieram — via
         `PRE_CARGA_PROD.IDPLANILHARETIRADA`. `{IDPLANILHADOCORI:
-        {IDPRECARGA, ...}}`."""
+        {IDPRECARGA, ...}}`.
+
+        `id_empresa` é o do cabeçalho — mesmo `OR` com `IDEMPRESABAIXAEST`
+        de `get_itens_carga` (ver lá), pelo mesmo motivo: numa entrega
+        entre filiais o item pode estar sob um `IDEMPRESA` diferente do
+        cabeçalho da carga formada. `PCP.IDEMPRESAVENDA = PR.IDEMPRESA`
+        no `JOIN` continua usando o `IDEMPRESA` do item mesmo —
+        `IDEMPRESAVENDA` é a empresa da venda original, o mesmo conceito
+        de `PR.IDEMPRESA`, não do cabeçalho."""
         linhas = self._fetch_all(
             "SELECT DISTINCT PR.IDPLANILHADOCORI, PCP.IDPRECARGA "
             "FROM PRODUTO_RETIRADO PR "
             "JOIN PRE_CARGA_PROD PCP "
             "  ON PCP.IDEMPRESAVENDA = PR.IDEMPRESA AND PCP.IDPLANILHAVENDA = PR.IDPLANILHADOCORI "
             " AND PCP.IDPLANILHARETIRADA = PR.IDPLANILHA "
-            "WHERE PR.IDEMPRESA = ? AND PR.IDPLANILHA = ?",
-            (id_empresa, id_planilha),
+            "WHERE (PR.IDEMPRESA = ? OR PR.IDEMPRESABAIXAEST = ?) AND PR.IDPLANILHA = ?",
+            (id_empresa, id_empresa, id_planilha),
         )
         origem: dict[int, set[int]] = {}
         for linha in linhas:
