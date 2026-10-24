@@ -1,0 +1,67 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: fusion-service-data
+  namespace: fusion-service
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fusion-service-backend
+  namespace: fusion-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fusion-service-backend
+  template:
+    metadata:
+      labels:
+        app: fusion-service-backend
+    spec:
+      containers:
+        - name: backend
+          image: ghcr.io/redsonbr140/fusion-service-backend:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 5050
+          envFrom:
+            - secretRef:
+                name: fusion-service-env
+          volumeMounts:
+            - mountPath: /app/data
+              name: data
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 5050
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 5050
+            initialDelaySeconds: 10
+            periodSeconds: 20
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: fusion-service-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fusion-service-backend
+  namespace: fusion-service
+spec:
+  selector:
+    app: fusion-service-backend
+  ports:
+    - port: 5050
+      targetPort: 5050
