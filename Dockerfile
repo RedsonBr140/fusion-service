@@ -7,10 +7,15 @@ FROM python:3.12-slim AS base
 # a plain slim image doesn't have it. unixodbc gives us that shared lib.
 # It does NOT include an IBM DB2 ODBC/CLI driver: CISS_DB_DRIVER must name
 # a driver registered in odbcinst.ini that is supplied separately (e.g. a
-# base image layer or a mounted volume with IBM's clidriver) — that driver
+# mounted volume with IBM's clidriver, in this repo's case) — that driver
 # is proprietary and isn't something pip or apt can install here.
+#
+# libxml2 isn't for us — it's the one dependency libdb2o.so (clidriver)
+# itself needs via dlopen and doesn't bundle, confirmed via `ldd` against
+# a real clidriver build. Without it, the driver loads with a generic
+# "file not found" from unixODBC that doesn't name the real missing lib.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends unixodbc curl \
+    && apt-get install -y --no-install-recommends unixodbc curl libxml2 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

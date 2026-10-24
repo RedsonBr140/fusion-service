@@ -1,0 +1,31 @@
+# IBM's DB2 ODBC/CLI driver (clidriver) itself is proprietary and never
+# goes into the published image — it was copied straight onto the
+# fusion-service-db2-driver PVC (same kubectl-cp approach used for the
+# sqlite data import), out of band from this repo. This file only
+# declares the PVC (for `kubectl apply` idempotency / documentation) and
+# the odbcinst.ini pointing at where the backend Deployment mounts it.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: fusion-service-db2-driver
+  namespace: fusion-service
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 300Mi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fusion-service-odbcinst
+  namespace: fusion-service
+data:
+  odbcinst.ini: |
+    [IBM DB2 ODBC DRIVER]
+    Description=IBM DB2 ODBC Driver
+    Driver=/opt/ibm/clidriver/lib/libdb2o.so
+    FileUsage=1
+    DontDLClose=1
+    UsageCount=1

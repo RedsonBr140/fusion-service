@@ -34,9 +34,22 @@ spec:
           envFrom:
             - secretRef:
                 name: fusion-service-env
+          env:
+            # libdb2o.so (clidriver) needs its own bundled .so dependencies
+            # found at runtime — not from the image, from the driver PVC.
+            - name: LD_LIBRARY_PATH
+              value: /opt/ibm/clidriver/lib
           volumeMounts:
             - mountPath: /app/data
               name: data
+            - mountPath: /opt/ibm/clidriver
+              name: db2-driver
+              # a extração do tar deixou um clidriver/ aninhado na raiz do
+              # PVC (o tarball já tinha esse prefixo) — sobe um nível.
+              subPath: clidriver
+            - mountPath: /etc/odbcinst.ini
+              name: odbcinst
+              subPath: odbcinst.ini
           readinessProbe:
             httpGet:
               path: /api/health
@@ -53,6 +66,12 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: fusion-service-data
+        - name: db2-driver
+          persistentVolumeClaim:
+            claimName: fusion-service-db2-driver
+        - name: odbcinst
+          configMap:
+            name: fusion-service-odbcinst
 ---
 apiVersion: v1
 kind: Service
