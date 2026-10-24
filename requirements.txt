@@ -9,3 +9,4 @@ fusiondms-client==0.1.0
 # Publicado no PyPI como "fusiondms-client", mas o pacote Python importado
 # continua "fusion" — usado em integrations/fusion_portal.py.
 python-dotenv==1.0.1
+gunicorn==23.0.0

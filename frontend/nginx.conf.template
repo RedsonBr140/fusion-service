@@ -1,0 +1,29 @@
+# Rendered by the nginx image's own docker-entrypoint envsubst step into
+# /etc/nginx/conf.d/default.conf. BACKEND_HOST/BACKEND_PORT default to the
+# values set in the Dockerfile but are meant to be overridden per k8s
+# environment via the container's env vars (e.g. a different backend
+# Service name per namespace) — no rebuild needed to point at a different
+# backend.
+server {
+    listen 8080;
+    server_name _;
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # Same-origin from the browser's point of view: this nginx proxies
+    # /api to the backend Service instead of the browser talking to it
+    # directly, mirroring what app.py does in the single-process layout
+    # (see CLAUDE.md) and what vite.config.ts's dev proxy does locally.
+    location /api/ {
+        proxy_pass http://${BACKEND_HOST}:${BACKEND_PORT}/api/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location / {
+        try_files $uri /index.html;
+    }
+}

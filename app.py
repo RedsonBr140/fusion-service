@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from flask import Flask, send_from_directory
+from flask import Flask, jsonify, send_from_directory
 
 import database
 from auth.routes import bp as auth_bp
@@ -40,6 +40,12 @@ def create_app(config=None) -> Flask:
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(cargas_fusion_bp)
+
+    @app.get("/api/health")
+    def health():
+        # Sem autenticação de propósito — usado por probes do k8s e pelo
+        # HEALTHCHECK do Dockerfile, que não têm sessão nem credencial.
+        return jsonify(status="ok")
 
     @app.route("/", defaults={"caminho": ""})
     @app.route("/<path:caminho>")
