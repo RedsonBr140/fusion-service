@@ -51,9 +51,19 @@ function mensagemDeErro(erro: unknown): string | null {
   return erro instanceof ApiError ? erro.message : erro ? "Erro inesperado." : null;
 }
 
-function agoraMenos(horas: number): string {
-  const data = new Date(Date.now() - horas * 3600_000);
-  return data.toISOString().slice(0, 19);
+/** Data de hoje às `hora:00:00`, em wall-clock local — nunca `.toISOString()`,
+ * que devolve UTC e faz um "7h" virar "10h"/"4h" dependendo do horário do
+ * ano, a mesma classe de bug de fuso documentada pra data_inicial/data_final
+ * do CISS (CLAUDE.md). `data_inicial`/`data_final` da API esperam a mesma
+ * wall-clock ingênua que `DTALTERACAO` tem no CISS (Brasília, sem offset) —
+ * `type="datetime-local"` já é local ao navegador, então os getters locais
+ * do Date bastam, sem nenhuma conversão. */
+function hojeAs(hora: number): string {
+  const hoje = new Date();
+  const ano = hoje.getFullYear();
+  const mes = String(hoje.getMonth() + 1).padStart(2, "0");
+  const dia = String(hoje.getDate()).padStart(2, "0");
+  return `${ano}-${mes}-${dia}T${String(hora).padStart(2, "0")}:00:00`;
 }
 
 function formatarData(iso: string | null): string {
@@ -154,8 +164,8 @@ interface Props {
 }
 
 export function BuscaCargasSection({ cargaPreSelecionada }: Props) {
-  const [dataInicial, setDataInicial] = useState(agoraMenos(24));
-  const [dataFinal, setDataFinal] = useState(agoraMenos(0));
+  const [dataInicial, setDataInicial] = useState(hojeAs(7));
+  const [dataFinal, setDataFinal] = useState(hojeAs(19));
   const [filtroEmpresaId, setFiltroEmpresaId] = useState<number | null>(null);
   const [ocultarEnviadas, setOcultarEnviadas] = useState(true);
   const [mostrarPreCargas, setMostrarPreCargas] = useState(true);
