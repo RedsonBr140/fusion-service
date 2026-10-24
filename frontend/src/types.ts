@@ -78,6 +78,10 @@ export interface SelecaoEnvioCargaFusion {
   veiculoCodigoErp?: string | null;
   /** NUMSEQUENCIA das entregas escolhidas; `null`/ausente = todas. */
   itens?: number[] | null;
+  /** "AAAA-MM-DDTHH:MM" (valor de <input type="datetime-local">) ou
+   * "AAAA-MM-DD HH:MM:SS"; ausente/null usa o default do backend
+   * (<dia atual + 1> 07:00, D3 da spec). */
+  dtSaida?: string | null;
 }
 
 export interface PreviewCargaFusion {
@@ -159,6 +163,7 @@ export interface SelecaoEnvioPreCargaFusion {
   motoristaCodigoErp?: string | null;
   veiculoCodigoErp?: string | null;
   itens?: number[] | null;
+  dtSaida?: string | null;
 }
 
 export interface PreviewPreCargaFusion {

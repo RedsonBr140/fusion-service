@@ -4,7 +4,7 @@ sempre um dublê: nenhum teste aqui toca a rede.
 """
 
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -604,8 +604,29 @@ def test_montar_payload_carga_dt_saida_e_sempre_amanha_as_7_ignorando_o_ciss():
 
     dt_saida = payload_carga["cargas"][0]["dt_saida"]
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2} 07:00:00", dt_saida)
-    amanha = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+    # Brasília, não o fuso de quem roda o teste (CI roda em UTC) — mesmo
+    # cálculo de _dt_saida_padrao, pra não quebrar por 3h de diferença.
+    agora_brasilia = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=-3)))
+    amanha = (agora_brasilia + timedelta(days=1)).strftime("%Y-%m-%d")
     assert dt_saida.startswith(amanha)
+
+
+def test_montar_payload_carga_aceita_dt_saida_escolhida_na_tela():
+    payload_carga, _, _, _ = service.montar_payload_carga(
+        DETALHE, [ITEM], {26623: CLIENTE}, MOTORISTA, VEICULO, dt_saida="2026-11-05 07:00:00"
+    )
+
+    assert payload_carga["cargas"][0]["dt_saida"] == "2026-11-05 07:00:00"
+
+
+def test_normalizar_dt_saida_aceita_formato_do_datetime_local_input():
+    assert service.normalizar_dt_saida("2026-11-05T07:00") == "2026-11-05 07:00:00"
+    assert service.normalizar_dt_saida("2026-11-05T07:00:00") == "2026-11-05 07:00:00"
+
+
+def test_normalizar_dt_saida_rejeita_formato_invalido():
+    with pytest.raises(service.DtSaidaInvalida):
+        service.normalizar_dt_saida("não é uma data")
 
 
 # --- fila de envio --------------------------------------------------------

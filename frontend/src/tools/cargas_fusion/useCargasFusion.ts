@@ -59,6 +59,7 @@ export function useCargaPreview(
       selecao.motoristaCodigoErp,
       selecao.veiculoCodigoErp,
       selecao.itens?.join(","),
+      selecao.dtSaida,
     ],
     queryFn: () => getCargaFusionPreview(selecionada!.idEmpresa, selecionada!.idPlanilha, selecao),
     enabled: selecionada !== null,

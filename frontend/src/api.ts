@@ -154,6 +154,7 @@ export function getCargaFusionPreview(
   if (selecao.motoristaCodigoErp != null) parametros.set("motorista_codigo_erp", selecao.motoristaCodigoErp);
   if (selecao.veiculoCodigoErp != null) parametros.set("veiculo_codigo_erp", selecao.veiculoCodigoErp);
   if (selecao.itens != null) parametros.set("itens", selecao.itens.join(","));
+  if (selecao.dtSaida != null) parametros.set("dt_saida", selecao.dtSaida);
   const query = parametros.toString();
   return request(`/api/cargas/${idEmpresa}/${idPlanilha}${query ? `?${query}` : ""}`);
 }
@@ -172,6 +173,7 @@ export function enviarCargaFusion(
       motorista_codigo_erp: selecao.motoristaCodigoErp ?? undefined,
       veiculo_codigo_erp: selecao.veiculoCodigoErp ?? undefined,
       itens: selecao.itens ?? undefined,
+      dt_saida: selecao.dtSaida ?? undefined,
       forcar: forcar || undefined,
     }),
   });
@@ -222,6 +224,7 @@ export function getPreCargaFusionPreview(
   if (selecao.motoristaCodigoErp != null) parametros.set("motorista_codigo_erp", selecao.motoristaCodigoErp);
   if (selecao.veiculoCodigoErp != null) parametros.set("veiculo_codigo_erp", selecao.veiculoCodigoErp);
   if (selecao.itens != null) parametros.set("itens", selecao.itens.join(","));
+  if (selecao.dtSaida != null) parametros.set("dt_saida", selecao.dtSaida);
   const query = parametros.toString();
   return request(`/api/pre-cargas/${idEmpresa}/${idPrecarga}${query ? `?${query}` : ""}`);
 }
@@ -238,6 +241,7 @@ export function enviarPreCargaFusion(
       motorista_codigo_erp: selecao.motoristaCodigoErp ?? undefined,
       veiculo_codigo_erp: selecao.veiculoCodigoErp ?? undefined,
       itens: selecao.itens ?? undefined,
+      dt_saida: selecao.dtSaida ?? undefined,
       forcar: forcar || undefined,
     }),
   });

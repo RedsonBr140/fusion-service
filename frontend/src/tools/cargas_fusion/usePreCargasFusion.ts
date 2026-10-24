@@ -45,6 +45,7 @@ export function usePreCargaPreview(
       selecao.motoristaCodigoErp,
       selecao.veiculoCodigoErp,
       selecao.itens?.join(","),
+      selecao.dtSaida,
     ],
     queryFn: () =>
       getPreCargaFusionPreview(selecionada!.idEmpresa, selecionada!.idPrecarga, selecao),

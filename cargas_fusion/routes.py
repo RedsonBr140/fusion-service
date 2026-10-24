@@ -28,6 +28,7 @@ MSG_CISS_NAO_CONFIGURADO = (
 MSG_CISS_INDISPONIVEL = "Consulta ao CISS DB2 indisponível. Tente novamente."
 MSG_PERIODO_INVALIDO = "Informe data_inicial e data_final em ISO (AAAA-MM-DDTHH:MM:SS)."
 MSG_CARGA_NAO_ENCONTRADA = "Carga não encontrada."
+MSG_DT_SAIDA_INVALIDA = "Data de saída inválida."
 
 
 def _ciss_client():
@@ -74,6 +75,14 @@ def _selecao_de_itens(valor) -> set[int] | None:
     return numeros
 
 
+def _dt_saida_da_requisicao(valor) -> str | None:
+    """`None`/vazio deixa `_dt_saida_padrao` decidir; levanta
+    `service.DtSaidaInvalida` pra quem chamar devolver 400."""
+    if not valor:
+        return None
+    return service.normalizar_dt_saida(valor)
+
+
 def _sugestoes(detalhe: dict) -> tuple[dict | None, dict | None]:
     motorista = service.motorista_sugerido(_fusion_portal_client(), detalhe.get("IDMOTORISTA"))
     veiculo = service.veiculo_sugerido(_fusion_portal_client(), detalhe.get("PLACATRANSP"))
@@ -88,6 +97,7 @@ def _montar_preview(
     motorista_codigo_erp: str | None = None,
     veiculo_codigo_erp: str | None = None,
     itens_selecionados: set[int] | None = None,
+    dt_saida: str | None = None,
 ):
     detalhe = client.get_carga_detalhe(id_empresa, id_planilha)
     if detalhe is None:
@@ -118,7 +128,7 @@ def _montar_preview(
     pedidos_excluidos = service.pedidos_cobertos_por_pre_carga(conn, origem_por_pedido)
 
     payload_carga, payload_entregas_servico, avisos, avisos_bloqueantes = service.montar_payload_carga(
-        detalhe, itens, clientes, motorista, veiculo, pedidos_excluidos=pedidos_excluidos
+        detalhe, itens, clientes, motorista, veiculo, pedidos_excluidos=pedidos_excluidos, dt_saida=dt_saida
     )
     return (
         payload_carga,
@@ -140,6 +150,7 @@ def _montar_preview_pre_carga(
     motorista_codigo_erp: str | None = None,
     veiculo_codigo_erp: str | None = None,
     itens_selecionados: set[int] | None = None,
+    dt_saida: str | None = None,
 ):
     detalhe = client.get_pre_carga_detalhe(id_empresa, id_precarga)
     if detalhe is None:
@@ -164,7 +175,7 @@ def _montar_preview_pre_carga(
     )
 
     payload_carga, payload_entregas_servico, avisos, avisos_bloqueantes = service.montar_payload_pre_carga(
-        detalhe, itens, clientes, motorista, veiculo
+        detalhe, itens, clientes, motorista, veiculo, dt_saida=dt_saida
     )
     return (
         payload_carga,
@@ -293,6 +304,11 @@ def ver_carga(id_empresa: int, id_planilha: int):
         return jsonify({"error": MSG_CISS_NAO_CONFIGURADO}), 503
 
     try:
+        dt_saida = _dt_saida_da_requisicao(request.args.get("dt_saida"))
+    except service.DtSaidaInvalida:
+        return jsonify({"error": MSG_DT_SAIDA_INVALIDA}), 400
+
+    try:
         resultado = _montar_preview(
             client,
             id_empresa,
@@ -300,6 +316,7 @@ def ver_carga(id_empresa: int, id_planilha: int):
             motorista_codigo_erp=request.args.get("motorista_codigo_erp") or None,
             veiculo_codigo_erp=request.args.get("veiculo_codigo_erp") or None,
             itens_selecionados=_selecao_de_itens(request.args.get("itens")),
+            dt_saida=dt_saida,
         )
     except CissDbError:
         return jsonify({"error": MSG_CISS_INDISPONIVEL}), 503
@@ -343,6 +360,11 @@ def enviar_carga(id_empresa: int, id_planilha: int):
 
     corpo = _corpo()
     try:
+        dt_saida = _dt_saida_da_requisicao(corpo.get("dt_saida"))
+    except service.DtSaidaInvalida:
+        return jsonify({"error": MSG_DT_SAIDA_INVALIDA}), 400
+
+    try:
         resultado = _montar_preview(
             client,
             id_empresa,
@@ -350,6 +372,7 @@ def enviar_carga(id_empresa: int, id_planilha: int):
             motorista_codigo_erp=corpo.get("motorista_codigo_erp") or None,
             veiculo_codigo_erp=corpo.get("veiculo_codigo_erp") or None,
             itens_selecionados=_selecao_de_itens(corpo.get("itens")),
+            dt_saida=dt_saida,
         )
     except CissDbError:
         return jsonify({"error": MSG_CISS_INDISPONIVEL}), 503
@@ -446,6 +469,11 @@ def ver_pre_carga(id_empresa: int, id_precarga: int):
         return jsonify({"error": MSG_CISS_NAO_CONFIGURADO}), 503
 
     try:
+        dt_saida = _dt_saida_da_requisicao(request.args.get("dt_saida"))
+    except service.DtSaidaInvalida:
+        return jsonify({"error": MSG_DT_SAIDA_INVALIDA}), 400
+
+    try:
         resultado = _montar_preview_pre_carga(
             client,
             id_empresa,
@@ -453,6 +481,7 @@ def ver_pre_carga(id_empresa: int, id_precarga: int):
             motorista_codigo_erp=request.args.get("motorista_codigo_erp") or None,
             veiculo_codigo_erp=request.args.get("veiculo_codigo_erp") or None,
             itens_selecionados=_selecao_de_itens(request.args.get("itens")),
+            dt_saida=dt_saida,
         )
     except CissDbError:
         return jsonify({"error": MSG_CISS_INDISPONIVEL}), 503
@@ -498,6 +527,11 @@ def enviar_pre_carga(id_empresa: int, id_precarga: int):
     motorista_codigo_erp = corpo.get("motorista_codigo_erp") or None
     veiculo_codigo_erp = corpo.get("veiculo_codigo_erp") or None
     try:
+        dt_saida = _dt_saida_da_requisicao(corpo.get("dt_saida"))
+    except service.DtSaidaInvalida:
+        return jsonify({"error": MSG_DT_SAIDA_INVALIDA}), 400
+
+    try:
         resultado = _montar_preview_pre_carga(
             client,
             id_empresa,
@@ -505,6 +539,7 @@ def enviar_pre_carga(id_empresa: int, id_precarga: int):
             motorista_codigo_erp=motorista_codigo_erp,
             veiculo_codigo_erp=veiculo_codigo_erp,
             itens_selecionados=_selecao_de_itens(corpo.get("itens")),
+            dt_saida=dt_saida,
         )
     except CissDbError:
         return jsonify({"error": MSG_CISS_INDISPONIVEL}), 503

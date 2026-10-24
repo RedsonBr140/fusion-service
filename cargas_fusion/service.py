@@ -15,7 +15,7 @@ import json
 import logging
 import sqlite3
 from collections.abc import Mapping, Sequence
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from integrations.fusion import FusionClient, FusionUnavailable
 from integrations.fusion_portal import FusionPortalClient, FusionPortalError
@@ -624,16 +624,46 @@ def _agrupar_itens_por_pedido(
     return [(chave, grupos[chave]) for chave in ordem]
 
 
+# Brasília, sem DST desde 2019 — mesmo offset fixo de integrations/ciss.py
+# (_FUSO_CISS). `_dt_saida_padrao` precisa do horário de Brasília mesmo
+# quando o processo não roda mais numa VM em Brasília: containerizado, o
+# relógio do sistema é UTC (confirmado no cluster k8s), e `datetime.now()`
+# ingênuo passou a devolver hora UTC sem ningém notar — "07:00" do dia
+# seguinte virava 04:00 em Brasília, o mesmo tipo de bug de fuso já
+# encontrado nas respostas da API (CLAUDE.md).
+_FUSO_BRASILIA = timezone(timedelta(hours=-3))
+
+
 def _dt_saida_padrao() -> str:
     """D3 da spec: `dt_saida` nunca vem do CISS — é sempre `<dia atual + 1>
-    07:00:00`, regra fixa calculada no momento do envio, independente de
-    `DTHORASAIDA`/`DTCONFIRMACAO`/qualquer coluna da carga. Achado em
-    produção: sem isso a carga não aparece em nenhuma consulta por data
-    (`t10_data_saida` fica `0000-00-00`), e reenviar `saveCarga` para um
-    `codigo_erp` já existente não corrige o campo depois — só a primeira
-    chamada que cria a carga conta."""
-    amanha = datetime.now() + timedelta(days=1)
-    return amanha.replace(hour=7, minute=0, second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+    07:00:00` em Brasília, regra fixa calculada no momento do envio,
+    independente de `DTHORASAIDA`/`DTCONFIRMACAO`/qualquer coluna da
+    carga. Achado em produção: sem isso a carga não aparece em nenhuma
+    consulta por data (`t10_data_saida` fica `0000-00-00`), e reenviar
+    `saveCarga` para um `codigo_erp` já existente não corrige o campo
+    depois — só a primeira chamada que cria a carga conta."""
+    agora_brasilia = datetime.now(timezone.utc).astimezone(_FUSO_BRASILIA)
+    amanha = agora_brasilia + timedelta(days=1)
+    return amanha.replace(hour=7, minute=0, second=0, microsecond=0, tzinfo=None).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+
+
+class DtSaidaInvalida(ValueError):
+    """`dt_saida` escolhida na tela não é uma data/hora válida."""
+
+
+def normalizar_dt_saida(valor: str) -> str:
+    """Aceita tanto `"AAAA-MM-DDTHH:MM"`/`"AAAA-MM-DDTHH:MM:SS"` (o que
+    `<input type="datetime-local">` manda) quanto o formato já usado
+    internamente (`"AAAA-MM-DD HH:MM:SS"`), sempre devolvendo este último —
+    o que `carga_payload["dt_saida"]` sempre teve. Sem conversão de fuso:
+    o valor já é wall-clock de Brasília (o navegador roda lá), mesmo
+    princípio do default em `_dt_saida_padrao`."""
+    try:
+        return datetime.fromisoformat(valor).strftime("%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        raise DtSaidaInvalida(f"Data de saída inválida: {valor!r}") from None
 
 
 def codigo_pedido_generico(numero_pedido: int, sufixo: str) -> str:
@@ -656,6 +686,7 @@ def _montar_payload(
     sufixo_pedido: str,
     *,
     pedidos_excluidos: set[int] | None = None,
+    dt_saida: str | None = None,
 ) -> tuple[dict, list[dict], list[str]]:
     """Monta o payload do `saveCarga` (com `entrega[]` como stub mínimo) e,
     separado, a lista de pedidos para `saveEntregaServico` — quem carrega o
@@ -690,6 +721,10 @@ def _montar_payload(
     `clientes_por_idclifor` vem pré-buscado (um `get_cliente_fusion` por
     cliente distinto da carga) — montar o payload não deveria decidir
     quando consultar o CISS.
+
+    `dt_saida` (já normalizada por `normalizar_dt_saida`, formato
+    `"AAAA-MM-DD HH:MM:SS"`) é a escolha manual feita na tela; `None` usa
+    o default fixo (`_dt_saida_padrao`, D3 da spec).
     """
     avisos: list[str] = []
     # Subconjunto de `avisos` que de fato impede o envio — usado por
@@ -894,7 +929,7 @@ def _montar_payload(
 
     carga_payload = {
         "codigo_erp": cod_carga,
-        "dt_saida": _dt_saida_padrao(),
+        "dt_saida": dt_saida or _dt_saida_padrao(),
         "codmotorista": motorista["codigo_erp"] if motorista else "",
         "codveiculo": veiculo["codigo_erp"] if veiculo else "",
         "destino": destino_final,
@@ -922,6 +957,7 @@ def montar_payload_carga(
     veiculo: Mapping[str, object] | None,
     *,
     pedidos_excluidos: set[int] | None = None,
+    dt_saida: str | None = None,
 ) -> tuple[dict, list[dict], list[str], list[str]]:
     """Monta o envio de uma carga real (`DBA.RETIRADA_PRODUTOS`) — ver
     `_montar_payload` para o shape completo, os avisos gerados, e o quarto
@@ -931,7 +967,10 @@ def montar_payload_carga(
     `pedidos_excluidos` vem de `pedidos_cobertos_por_pre_carga`: pedidos
     desta carga cujos itens já foram enviados ao Fusion como parte de uma
     pré-carga `ENVIADA` — ficam de fora deste envio (com aviso não
-    bloqueante), pra não duplicar no Fusion."""
+    bloqueante), pra não duplicar no Fusion.
+
+    `dt_saida` já normalizada (ver `_montar_payload`) — `None` usa o
+    default `<dia atual + 1> 07:00:00`."""
     id_empresa = detalhe["IDEMPRESA"]
     id_planilha = detalhe["IDPLANILHA"]
     destino_partes = [p for p in (detalhe.get("DESCRCIDADE"), detalhe.get("UF")) if p]
@@ -946,6 +985,7 @@ def montar_payload_carga(
         veiculo,
         str(id_planilha),
         pedidos_excluidos=pedidos_excluidos,
+        dt_saida=dt_saida,
     )
 
 
@@ -962,6 +1002,8 @@ def montar_payload_pre_carga(
     clientes_por_idclifor: Mapping[int, Mapping[str, object] | None],
     motorista: Mapping[str, object] | None,
     veiculo: Mapping[str, object] | None,
+    *,
+    dt_saida: str | None = None,
 ) -> tuple[dict, list[dict], list[str], list[str]]:
     """Monta o envio de uma pré-carga (`DBA.PRE_CARGA`) como se já fosse
     uma carga formada — ver `_montar_payload` para o shape completo.
@@ -972,7 +1014,10 @@ def montar_payload_pre_carga(
     quem está enviando escolhe os dois na tela antes de confirmar.
 
     `destino` fica vazio: `PRE_CARGA` não tem `UF`/cidade (fato do schema,
-    não lacuna de levantamento)."""
+    não lacuna de levantamento).
+
+    `dt_saida` já normalizada (ver `_montar_payload`) — `None` usa o
+    default `<dia atual + 1> 07:00:00`."""
     id_empresa = detalhe["IDEMPRESA"]
     id_precarga = detalhe["IDPRECARGA"]
     return _montar_payload(
@@ -985,6 +1030,7 @@ def montar_payload_pre_carga(
         motorista,
         veiculo,
         f"PC{id_precarga}",
+        dt_saida=dt_saida,
     )
 
 

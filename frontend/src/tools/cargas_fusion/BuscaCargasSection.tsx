@@ -66,6 +66,18 @@ function hojeAs(hora: number): string {
   return `${ano}-${mes}-${dia}T${String(hora).padStart(2, "0")}:00:00`;
 }
 
+/** Igual a `hojeAs`, mas pro dia seguinte — o default de `dt_saida` do
+ * saveCarga (D3 da spec, `_dt_saida_padrao` no backend): `<dia atual + 1>
+ * 07:00`. A pessoa pode trocar na tela; isso só preenche o campo. */
+function amanhaAs(hora: number): string {
+  const amanha = new Date();
+  amanha.setDate(amanha.getDate() + 1);
+  const ano = amanha.getFullYear();
+  const mes = String(amanha.getMonth() + 1).padStart(2, "0");
+  const dia = String(amanha.getDate()).padStart(2, "0");
+  return `${ano}-${mes}-${dia}T${String(hora).padStart(2, "0")}:00:00`;
+}
+
 function formatarData(iso: string | null): string {
   if (!iso) return "—";
   const data = new Date(iso);
@@ -181,6 +193,7 @@ export function BuscaCargasSection({ cargaPreSelecionada }: Props) {
   // não um id — não há mais lista local pra resolver um id de volta a um nome.
   const [motoristaEscolhido, setMotoristaEscolhido] = useState<MotoristaFusion | null>(null);
   const [veiculoEscolhido, setVeiculoEscolhido] = useState<VeiculoFusion | null>(null);
+  const [dtSaidaEscolhida, setDtSaidaEscolhida] = useState(amanhaAs(7));
   const [itensSelecionados, setItensSelecionados] = useState<Set<number> | null>(null);
   const [confirmarReenvio, setConfirmarReenvio] = useState(false);
   // Snapshot do que foi enviado com sucesso (só carga — pré-carga não abre
@@ -207,6 +220,7 @@ export function BuscaCargasSection({ cargaPreSelecionada }: Props) {
       motoristaCodigoErp: motoristaEscolhido?.codigo_erp ?? undefined,
       veiculoCodigoErp: veiculoEscolhido?.codigo_erp ?? undefined,
       itens: itensSelecionados ? Array.from(itensSelecionados) : undefined,
+      dtSaida: dtSaidaEscolhida,
     }
   );
   const previewPreCarga = usePreCargaPreview(
@@ -217,6 +231,7 @@ export function BuscaCargasSection({ cargaPreSelecionada }: Props) {
       motoristaCodigoErp: motoristaEscolhido?.codigo_erp ?? undefined,
       veiculoCodigoErp: veiculoEscolhido?.codigo_erp ?? undefined,
       itens: itensSelecionados ? Array.from(itensSelecionados) : undefined,
+      dtSaida: dtSaidaEscolhida,
     }
   );
 
@@ -231,6 +246,7 @@ export function BuscaCargasSection({ cargaPreSelecionada }: Props) {
       setSelecionada({ tipo: "carga", ...cargaPreSelecionada });
       setMotoristaEscolhido(null);
       setVeiculoEscolhido(null);
+      setDtSaidaEscolhida(amanhaAs(7));
       setItensSelecionados(null);
       setConfirmarReenvio(false);
       setCargaEnviada(null);
@@ -262,6 +278,7 @@ export function BuscaCargasSection({ cargaPreSelecionada }: Props) {
       onSuccess: (resultado) => {
         setMotoristaEscolhido(null);
         setVeiculoEscolhido(null);
+        setDtSaidaEscolhida(amanhaAs(7));
         setItensSelecionados(null);
         setConfirmarReenvio(false);
         setCargaEnviada(null);
@@ -291,6 +308,7 @@ export function BuscaCargasSection({ cargaPreSelecionada }: Props) {
     marcarIntegrada.reset();
     setMotoristaEscolhido(null);
     setVeiculoEscolhido(null);
+    setDtSaidaEscolhida(amanhaAs(7));
     setItensSelecionados(null);
     setConfirmarReenvio(false);
     setCargaEnviada(null);
@@ -332,6 +350,7 @@ export function BuscaCargasSection({ cargaPreSelecionada }: Props) {
           motoristaCodigoErp: motoristaEscolhido?.codigo_erp ?? undefined,
           veiculoCodigoErp: veiculoEscolhido?.codigo_erp ?? undefined,
           itens: itensSelecionados ? Array.from(itensSelecionados) : undefined,
+          dtSaida: dtSaidaEscolhida,
         },
         forcar,
       },
@@ -360,6 +379,7 @@ export function BuscaCargasSection({ cargaPreSelecionada }: Props) {
         motoristaCodigoErp: motoristaEscolhido?.codigo_erp ?? undefined,
         veiculoCodigoErp: veiculoEscolhido?.codigo_erp ?? undefined,
         itens: itensSelecionados ? Array.from(itensSelecionados) : undefined,
+        dtSaida: dtSaidaEscolhida,
       },
       forcar,
     });
@@ -583,6 +603,17 @@ export function BuscaCargasSection({ cargaPreSelecionada }: Props) {
                 />
               </div>
 
+              <div className="flex flex-col gap-1">
+                <Label htmlFor="data-saida">Data de saída</Label>
+                <Input
+                  id="data-saida"
+                  type="datetime-local"
+                  value={dtSaidaEscolhida}
+                  onChange={(e) => setDtSaidaEscolhida(e.target.value)}
+                  className="w-56"
+                />
+              </div>
+
               {faltaSelecao && (
                 <p className="rounded-md bg-destructive/10 px-3 py-2.5 text-sm text-destructive-text">
                   Selecione {!motoristaResolvido && !veiculoResolvido
@@ -703,6 +734,17 @@ export function BuscaCargasSection({ cargaPreSelecionada }: Props) {
                   sugestao={null}
                   escolhido={veiculoEscolhido}
                   onEscolher={setVeiculoEscolhido}
+                />
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <Label htmlFor="pc-data-saida">Data de saída</Label>
+                <Input
+                  id="pc-data-saida"
+                  type="datetime-local"
+                  value={dtSaidaEscolhida}
+                  onChange={(e) => setDtSaidaEscolhida(e.target.value)}
+                  className="w-56"
                 />
               </div>
 
