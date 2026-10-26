@@ -615,6 +615,26 @@ comum. Fallback pro cálculo antigo (`VALTOTLIQUIDO / QTDPRODUTO`) quando
 pequena das linhas (~0.45% de uma amostra de 10.7M linhas de
 `ESTOQUE_ANALITICO`, mesma taxa de ausência de `VALTOTLIQUIDO`).
 
+## `obs` de `saveEntregaServico` — observação do pedido, não da carga
+
+O campo "Observação" que o Fusion mostra na tela de entrega (pedido),
+diferente do "obs" da carga (`saveCarga`, já populado por
+`RETIRADA_PRODUTOS.OBSERVACAO`), ficava sempre vazio — `entregas_servico`
+nunca mandava nada parecido. Testado isoladamente contra produção
+(pedido descartável, filial e cliente de teste): mandando `"obs"` e
+`"observacao"` juntos num mesmo item, só `"obs"` apareceu na tela —
+`"observacao"` não tem efeito nenhum (chave ignorada, a chamada não
+rejeita chaves desconhecidas).
+
+Fonte confirmada contra o catálogo do DB2: `ORCAMENTO.OBSERVACAO` (a nota
+digitada no CISS na hora da venda, no nível do pedido/orçamento, não da
+carga) — `get_itens_carga`/`get_itens_pre_carga` ganharam um
+`LEFT JOIN ORCAMENTO ORC ON ORC.IDORCAMENTO = OPN.IDORCAMENTO` (mesmo
+`IDORCAMENTO` que já resolviam via `ORCAMENTO_PRE_NOTA`), expondo
+`ORCAMENTO_OBSERVACAO`; `_montar_payload` manda isso como `"obs"` de cada
+item de `entregas_servico`. Pedido sem observação cadastrada manda `""`,
+nunca falta o campo.
+
 ## Pendências de dado conhecidas
 
 - Praça/rota reais (ver acima) — placeholder funciona, sem fonte no CISS.

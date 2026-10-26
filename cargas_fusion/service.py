@@ -807,6 +807,16 @@ def _montar_payload(
                 "pedido_orig": cod_pedido,
                 "nf": _texto(primeiro.get("NUMNOTA")) or "",
                 "serie": _texto(primeiro.get("SERIENOTA")) or "",
+                # Achado em produção (2026-10-26): o campo da tela de
+                # entrega do Fusion que mostra "observação" é "obs" aqui
+                # mesmo (chave testada isolada contra produção, junto de
+                # "observacao" — só "obs" apareceu na entrega). Fonte:
+                # ORCAMENTO.OBSERVACAO (nota do pedido digitada no CISS na
+                # hora da venda), via get_itens_carga/get_itens_pre_carga —
+                # não existe campo equivalente em RETIRADA_PRODUTOS no
+                # nível do item/pedido, só no nível da carga (OBSERVACAO,
+                # usado em "obs" do saveCarga, conceito diferente).
+                "obs": _texto(primeiro.get("ORCAMENTO_OBSERVACAO")) or "",
                 # _numero_informado, não str() cru: valor_total é soma de
                 # VALTOTLIQUIDO (int 0 quando todas as linhas vêm NULL),
                 # e str(0) == "0" cai na mesma quirk do PESOBRUTO abaixo.

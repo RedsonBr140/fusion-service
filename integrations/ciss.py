@@ -460,13 +460,23 @@ class CissClient:
         `cargas_fusion/service.py`. `VALTOTLIQUIDO` continua sendo o
         `subtotal` (líquido, o que de fato foi cobrado); os dois virem de
         colunas diferentes da mesma linha de `ESTOQUE_ANALITICO` é
-        esperado quando há desconto — não é inconsistência."""
+        esperado quando há desconto — não é inconsistência.
+
+        `ORCAMENTO.OBSERVACAO` (via `LEFT JOIN` por `OPN.IDORCAMENTO`): a
+        nota do pedido digitada no CISS na hora da venda — fonte do `obs`
+        de `saveEntregaServico` (achado em produção, 2026-10-26: `"obs"`
+        é a chave que o Fusion lê na tela de entrega, testada isoladamente
+        contra um pedido descartável junto de `"observacao"`, que não
+        apareceu em lugar nenhum). Não é o mesmo conceito do `OBSERVACAO`
+        de `RETIRADA_PRODUTOS` (nível da carga, usado no `obs` do
+        `saveCarga`) — um pedido pode ter nota própria mesmo numa carga
+        sem observação nenhuma, e vice-versa."""
         return self._fetch_all(
             "SELECT "
             "PR.NUMSEQUENCIA, "
             "PR.IDPLANILHADOCORI, PR.NUMSEQUENCIAORIGEM, PR.IDSUBPRODUTO, "
             "CAST(PR.QTDPRODUTO AS DOUBLE) AS QTDPRODUTO, "
-            "OPN.IDORCAMENTO, "
+            "OPN.IDORCAMENTO, ORC.OBSERVACAO AS ORCAMENTO_OBSERVACAO, "
             "N.NUMNOTA, N.SERIENOTA, N.IDCLIFOR, "
             "NES.IDOPERACAO, NES.IDCLIFORENTREGA, "
             "CF_CLI.NOME AS NOME_CLIENTE, "
@@ -488,6 +498,7 @@ class CissClient:
             " AND PRN.NUMSEQUENCIA = PR.NUMSEQUENCIA "
             "LEFT JOIN ORCAMENTO_PRE_NOTA OPN "
             "  ON OPN.IDEMPRESAPRENOTA = PR.IDEMPRESA AND OPN.IDPLANILHAPRENOTA = PR.IDPLANILHADOCORI "
+            "LEFT JOIN ORCAMENTO ORC ON ORC.IDORCAMENTO = OPN.IDORCAMENTO "
             "LEFT JOIN NOTAS N "
             "  ON N.IDPLANILHA = PRN.IDPLANILHANOTA AND N.IDEMPRESA = PRN.IDEMPRESANOTA "
             "LEFT JOIN NOTAS_ENTRADA_SAIDA NES "
@@ -563,7 +574,7 @@ class CissClient:
             "PCP.NUMSEQUENCIAVENDA AS NUMSEQUENCIAORIGEM, "
             "PCP.IDSUBPRODUTO, "
             "CAST(PCP.QTDPRODUTO AS DOUBLE) AS QTDPRODUTO, "
-            "OPN.IDORCAMENTO, "
+            "OPN.IDORCAMENTO, ORC.OBSERVACAO AS ORCAMENTO_OBSERVACAO, "
             "NES.IDCLIFORENTREGA, N.IDCLIFOR, "
             "NES.IDOPERACAO, "
             "CF_CLI.NOME AS NOME_CLIENTE, "
@@ -581,6 +592,7 @@ class CissClient:
             "  AND LR_ITEM.FLAGUTILIZAINTEGRACAOFUSION = 'T' "
             "LEFT JOIN ORCAMENTO_PRE_NOTA OPN "
             "  ON OPN.IDEMPRESAPRENOTA = PCP.IDEMPRESAVENDA AND OPN.IDPLANILHAPRENOTA = PCP.IDPLANILHAVENDA "
+            "LEFT JOIN ORCAMENTO ORC ON ORC.IDORCAMENTO = OPN.IDORCAMENTO "
             "LEFT JOIN NOTAS N ON N.IDEMPRESA = PCP.IDEMPRESAVENDA AND N.IDPLANILHA = PCP.IDPLANILHAVENDA "
             "LEFT JOIN NOTAS_ENTRADA_SAIDA NES "
             "  ON NES.IDEMPRESA = PCP.IDEMPRESAVENDA AND NES.IDPLANILHA = PCP.IDPLANILHAVENDA "

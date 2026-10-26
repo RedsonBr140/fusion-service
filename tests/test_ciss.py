@@ -489,6 +489,28 @@ def test_get_carga_por_pedido_so_usa_idempresabaixaest_sem_cabecalho_proprio(mon
     ) in cursor.sql_executado
 
 
+# --- observação do pedido (ORCAMENTO.OBSERVACAO), fonte do "obs" ---------
+# de saveEntregaServico (achado em produção, 2026-10-26 — ver service.py).
+
+
+def test_get_itens_carga_junta_observacao_do_orcamento(monkeypatch):
+    _, _, cursor = montar_driver(monkeypatch, description=[("NUMSEQUENCIA",)], linhas=[])
+
+    CissClient(DB).get_itens_carga(1, 6329109)
+
+    assert "LEFT JOIN ORCAMENTO ORC ON ORC.IDORCAMENTO = OPN.IDORCAMENTO" in cursor.sql_executado
+    assert "ORC.OBSERVACAO AS ORCAMENTO_OBSERVACAO" in cursor.sql_executado
+
+
+def test_get_itens_pre_carga_junta_observacao_do_orcamento(monkeypatch):
+    _, _, cursor = montar_driver(monkeypatch, description=[("NUMSEQUENCIA",)], linhas=[])
+
+    CissClient(DB).get_itens_pre_carga(796109)
+
+    assert "LEFT JOIN ORCAMENTO ORC ON ORC.IDORCAMENTO = OPN.IDORCAMENTO" in cursor.sql_executado
+    assert "ORC.OBSERVACAO AS ORCAMENTO_OBSERVACAO" in cursor.sql_executado
+
+
 def test_get_itens_pre_carga_filtra_item_por_ponto_de_retirada(monkeypatch):
     """Mesmo filtro de get_itens_carga, mas PRE_CARGA_PROD usa
     IDPONTORETIRADA — mesmo espaço de id de LOCAL_RETIRADA.IDLOCALRETIRADA."""

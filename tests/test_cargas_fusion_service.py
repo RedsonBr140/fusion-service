@@ -470,6 +470,29 @@ def test_montar_payload_carga_monta_entrega_e_carga():
     ]
 
 
+def test_montar_payload_carga_usa_observacao_do_orcamento_como_obs():
+    """Achado em produção (2026-10-26): o Fusion lê "obs" na tela de
+    entrega (testado isoladamente contra um pedido descartável, junto de
+    "observacao" — só "obs" apareceu). Fonte: ORCAMENTO.OBSERVACAO, não
+    RETIRADA_PRODUTOS.OBSERVACAO (esse é o nível da carga, usado no "obs"
+    do saveCarga)."""
+    item = {**ITEM, "ORCAMENTO_OBSERVACAO": "Entregar na portaria dos fundos"}
+
+    _, entregas_servico, _, _ = service.montar_payload_carga(
+        DETALHE, [item], {26623: CLIENTE}, MOTORISTA, VEICULO
+    )
+
+    assert entregas_servico[0]["obs"] == "Entregar na portaria dos fundos"
+
+
+def test_montar_payload_carga_sem_observacao_do_orcamento_envia_obs_vazio():
+    _, entregas_servico, _, _ = service.montar_payload_carga(
+        DETALHE, [ITEM], {26623: CLIENTE}, MOTORISTA, VEICULO
+    )
+
+    assert entregas_servico[0]["obs"] == ""
+
+
 def test_montar_payload_carga_ignora_pedido_sem_orcamento_vinculado():
     """Quando get_itens_carga não resolveu IDORCAMENTO (carga sem origem em
     orçamento, ou NF/pedido ainda não gerados), a entrega não entra no
