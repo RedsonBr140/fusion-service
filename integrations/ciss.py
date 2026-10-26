@@ -208,10 +208,21 @@ class CissClient:
     # (71% de uma amostra de 3467 cargas cross-empresa desde o corte de
     # integração) — exigir só PR.IDEMPRESA = RP.IDEMPRESA escondia essas
     # cargas inteiras da integração.
+    # NOT EXISTS (RP_OWN...) no ramo do IDEMPRESABAIXAEST: achado em produção
+    # (cargas 2_22160293 e 9_22160293, mesmo IDPLANILHA por coincidência de
+    # sequência — não é a mesma carga) — sem o guard, um item cujo
+    # IDEMPRESA já bate direto com o cabeçalho dele também vazava pro
+    # cabeçalho de OUTRA empresa que por acaso reusou o mesmo número de
+    # IDPLANILHA. O fallback de entrega entre filiais só devia valer quando
+    # o item está "órfão" (sem cabeçalho nenhum na própria empresa para
+    # aquele IDPLANILHA) — nunca quando já existe um cabeçalho direto.
     _FILTRO_FUSION_CARGA = (
         "AND EXISTS (SELECT 1 FROM PRODUTO_RETIRADO PR_FUS "
         "JOIN LOCAL_RETIRADA LR_FUS ON LR_FUS.IDLOCALRETIRADA = PR_FUS.IDLOCALRETIRADA "
-        "WHERE (PR_FUS.IDEMPRESA = RP.IDEMPRESA OR PR_FUS.IDEMPRESABAIXAEST = RP.IDEMPRESA) "
+        "WHERE (PR_FUS.IDEMPRESA = RP.IDEMPRESA "
+        "OR (PR_FUS.IDEMPRESABAIXAEST = RP.IDEMPRESA AND NOT EXISTS ("
+        "SELECT 1 FROM RETIRADA_PRODUTOS RP_OWN "
+        "WHERE RP_OWN.IDEMPRESA = PR_FUS.IDEMPRESA AND RP_OWN.IDPLANILHA = PR_FUS.IDPLANILHA))) "
         "AND PR_FUS.IDPLANILHA = RP.IDPLANILHA "
         "AND LR_FUS.FLAGUTILIZAINTEGRACAOFUSION = 'T') "
     )
@@ -305,8 +316,18 @@ class CissClient:
         if not cargas:
             return set()
 
+        # NOT EXISTS (RP_OWN...): mesmo guard de `_FILTRO_FUSION_CARGA` —
+        # o fallback de IDEMPRESABAIXAEST só vale quando o item não tem
+        # cabeçalho próprio pra este IDPLANILHA (achado em produção:
+        # cargas 2_22160293/9_22160293, mesmo IDPLANILHA por coincidência).
         condicoes = " OR ".join(
-            ["((PR.IDEMPRESA = ? OR PR.IDEMPRESABAIXAEST = ?) AND PR.IDPLANILHA = ?)"] * len(cargas)
+            [
+                "((PR.IDEMPRESA = ? OR (PR.IDEMPRESABAIXAEST = ? AND NOT EXISTS ("
+                "SELECT 1 FROM RETIRADA_PRODUTOS RP_OWN "
+                "WHERE RP_OWN.IDEMPRESA = PR.IDEMPRESA AND RP_OWN.IDPLANILHA = PR.IDPLANILHA)))"
+                " AND PR.IDPLANILHA = ?)"
+            ]
+            * len(cargas)
         )
         params = [
             valor
@@ -360,7 +381,9 @@ class CissClient:
             "JOIN ORCAMENTO_PRE_NOTA OPN "
             "  ON OPN.IDEMPRESAPRENOTA = PR.IDEMPRESA AND OPN.IDPLANILHAPRENOTA = PR.IDPLANILHADOCORI "
             "JOIN RETIRADA_PRODUTOS RP ON RP.IDPLANILHA = PR.IDPLANILHA "
-            "  AND (RP.IDEMPRESA = PR.IDEMPRESA OR RP.IDEMPRESA = PR.IDEMPRESABAIXAEST) "
+            "  AND (RP.IDEMPRESA = PR.IDEMPRESA OR (RP.IDEMPRESA = PR.IDEMPRESABAIXAEST "
+            "AND NOT EXISTS (SELECT 1 FROM RETIRADA_PRODUTOS RP_OWN "
+            "WHERE RP_OWN.IDEMPRESA = PR.IDEMPRESA AND RP_OWN.IDPLANILHA = PR.IDPLANILHA))) "
             "WHERE OPN.IDORCAMENTO = ? "
             "ORDER BY RP.DTALTERACAO DESC "
             "FETCH FIRST 1 ROWS ONLY",
@@ -384,7 +407,9 @@ class CissClient:
             " AND PRN.NUMSEQUENCIA = PR.NUMSEQUENCIA "
             "JOIN NOTAS N ON N.IDPLANILHA = PRN.IDPLANILHANOTA AND N.IDEMPRESA = PRN.IDEMPRESANOTA "
             "JOIN RETIRADA_PRODUTOS RP ON RP.IDPLANILHA = PR.IDPLANILHA "
-            "  AND (RP.IDEMPRESA = PR.IDEMPRESA OR RP.IDEMPRESA = PR.IDEMPRESABAIXAEST) "
+            "  AND (RP.IDEMPRESA = PR.IDEMPRESA OR (RP.IDEMPRESA = PR.IDEMPRESABAIXAEST "
+            "AND NOT EXISTS (SELECT 1 FROM RETIRADA_PRODUTOS RP_OWN "
+            "WHERE RP_OWN.IDEMPRESA = PR.IDEMPRESA AND RP_OWN.IDPLANILHA = PR.IDPLANILHA))) "
             "WHERE N.NUMNOTA = ? AND N.SERIENOTA = ? "
             "FETCH FIRST 1 ROWS ONLY",
             (numnota, serienota),
@@ -418,6 +443,17 @@ class CissClient:
         onde o estoque foi baixado) bate com o cabeçalho na maioria desses
         casos — por isso o `OR` na condição. Exigir só `PR.IDEMPRESA =
         id_empresa` escondia a carga inteira (zero itens) da integração.
+
+        O `OR` por `IDEMPRESABAIXAEST` só vale com o item **sem** cabeçalho
+        na própria empresa (`NOT EXISTS` em `RETIRADA_PRODUTOS` por
+        `PR.IDEMPRESA`/`PR.IDPLANILHA`) — achado em produção (cargas
+        `2_22160293` e `9_22160293`, mesmo `IDPLANILHA` por coincidência de
+        sequência entre empresas diferentes, não a mesma carga): sem o
+        guard, um item com cabeçalho direto na própria empresa (`2`) também
+        vazava pro cabeçalho de outra empresa (`9`) que por acaso tinha o
+        mesmo número de `IDPLANILHA` — duplicando o pedido no envio ao
+        Fusion (pedido_erp batendo, mas `empresa_fat` diferente evita o
+        upsert, gerando dois registros lá).
 
         `VALUNITBRUTO`: preço unitário de catálogo (bruto, antes do
         desconto), fonte real pro `preco` do item — ver `_preco_item` em
@@ -463,7 +499,9 @@ class CissClient:
             "LEFT JOIN PRODUTO P ON P.IDPRODUTO = PG.IDPRODUTO "
             "LEFT JOIN CLIENTE_FORNECEDOR CF_CLI "
             "  ON CF_CLI.IDCLIFOR = COALESCE(NES.IDCLIFORENTREGA, N.IDCLIFOR) "
-            "WHERE PR.IDPLANILHA = ? AND (PR.IDEMPRESA = ? OR PR.IDEMPRESABAIXAEST = ?) "
+            "WHERE PR.IDPLANILHA = ? AND (PR.IDEMPRESA = ? OR (PR.IDEMPRESABAIXAEST = ? "
+            "AND NOT EXISTS (SELECT 1 FROM RETIRADA_PRODUTOS RP_OWN "
+            "WHERE RP_OWN.IDEMPRESA = PR.IDEMPRESA AND RP_OWN.IDPLANILHA = PR.IDPLANILHA))) "
             "ORDER BY PR.NUMSEQUENCIA",
             (id_planilha, id_empresa, id_empresa),
         )
@@ -577,7 +615,10 @@ class CissClient:
             "JOIN PRE_CARGA_PROD PCP "
             "  ON PCP.IDEMPRESAVENDA = PR.IDEMPRESA AND PCP.IDPLANILHAVENDA = PR.IDPLANILHADOCORI "
             " AND PCP.IDPLANILHARETIRADA = PR.IDPLANILHA "
-            "WHERE (PR.IDEMPRESA = ? OR PR.IDEMPRESABAIXAEST = ?) AND PR.IDPLANILHA = ?",
+            "WHERE (PR.IDEMPRESA = ? OR (PR.IDEMPRESABAIXAEST = ? AND NOT EXISTS ("
+            "SELECT 1 FROM RETIRADA_PRODUTOS RP_OWN "
+            "WHERE RP_OWN.IDEMPRESA = PR.IDEMPRESA AND RP_OWN.IDPLANILHA = PR.IDPLANILHA))) "
+            "AND PR.IDPLANILHA = ?",
             (id_empresa, id_empresa, id_planilha),
         )
         origem: dict[int, set[int]] = {}

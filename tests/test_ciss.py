@@ -453,6 +453,42 @@ def test_get_itens_carga_filtra_item_por_local_de_retirada(monkeypatch):
     assert "JOIN LOCAL_RETIRADA LR_ITEM ON LR_ITEM.IDLOCALRETIRADA = PR.IDLOCALRETIRADA" in cursor.sql_executado
 
 
+# --- colisão de IDPLANILHA entre empresas (não é entrega entre filiais) ---
+
+
+def test_get_itens_carga_so_usa_idempresabaixaest_sem_cabecalho_proprio(monkeypatch):
+    """Achado em produção: cargas 2_22160293 e 9_22160293 têm o mesmo
+    IDPLANILHA por coincidência de sequência entre empresas diferentes —
+    não é a mesma carga, não é entrega entre filiais. Um item com
+    cabeçalho direto na própria empresa (IDEMPRESA) não pode vazar pro
+    cabeçalho de outra empresa só porque IDEMPRESABAIXAEST bate — por
+    isso o NOT EXISTS, limitando o fallback a item sem cabeçalho na
+    própria empresa."""
+    _, _, cursor = montar_driver(monkeypatch, description=[("NUMSEQUENCIA",)], linhas=[])
+
+    CissClient(DB).get_itens_carga(9, 22160293)
+
+    assert (
+        "(PR.IDEMPRESA = ? OR (PR.IDEMPRESABAIXAEST = ? "
+        "AND NOT EXISTS (SELECT 1 FROM RETIRADA_PRODUTOS RP_OWN "
+        "WHERE RP_OWN.IDEMPRESA = PR.IDEMPRESA AND RP_OWN.IDPLANILHA = PR.IDPLANILHA)))"
+    ) in cursor.sql_executado
+
+
+def test_get_carga_por_pedido_so_usa_idempresabaixaest_sem_cabecalho_proprio(monkeypatch):
+    _, _, cursor = montar_driver(
+        monkeypatch, description=[("IDEMPRESA",), ("IDPLANILHA",)], linhas=[]
+    )
+
+    CissClient(DB).get_carga_por_pedido(616672)
+
+    assert (
+        "(RP.IDEMPRESA = PR.IDEMPRESA OR (RP.IDEMPRESA = PR.IDEMPRESABAIXAEST "
+        "AND NOT EXISTS (SELECT 1 FROM RETIRADA_PRODUTOS RP_OWN "
+        "WHERE RP_OWN.IDEMPRESA = PR.IDEMPRESA AND RP_OWN.IDPLANILHA = PR.IDPLANILHA)))"
+    ) in cursor.sql_executado
+
+
 def test_get_itens_pre_carga_filtra_item_por_ponto_de_retirada(monkeypatch):
     """Mesmo filtro de get_itens_carga, mas PRE_CARGA_PROD usa
     IDPONTORETIRADA — mesmo espaço de id de LOCAL_RETIRADA.IDLOCALRETIRADA."""

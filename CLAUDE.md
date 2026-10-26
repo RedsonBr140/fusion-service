@@ -490,6 +490,39 @@ anexado à carga depois que a venda já mudou de contexto), ou pode ser
 genuinamente outro padrão de negócio. Revisitar se mais relatos de
 "carga não aparece" surgirem.
 
+### O `OR IDEMPRESABAIXAEST` duplicava pedido quando `IDPLANILHA` colide entre empresas
+
+Achado em produção, reportado pelo usuário: cargas `9_22160293` e
+`2_22160293` mostravam o mesmo pedido (616672) duplicado. Confirmado por
+query — os dois cabeçalhos são reais e independentes, criados a ~0.7s de
+distância (`08:32:10.035` e `08:32:10.757`), que por coincidência de
+sequência (per-empresa) acabaram com o mesmo número de `IDPLANILHA`. O
+item de 616672 tem `IDEMPRESA=2, IDEMPRESABAIXAEST=9` — um match direto e
+inequívoco com o cabeçalho `(2, 22160293)`, sem ambiguidade nenhuma. O
+`OR IDEMPRESABAIXAEST` (pensado só pro caso de item órfão na própria
+empresa, ver "Entrega entre filiais" acima) vazava esse mesmo item pro
+cabeçalho `(9, 22160293)` também — uma carga completamente diferente que
+só por acaso reusou o mesmo número.
+
+Consequência real: como `pedido_erp` usa `id_planilha` da carga como
+sufixo (`codigo_pedido`/`codigo_pedido_generico` em
+`cargas_fusion/service.py`), os dois cabeçalhos gerariam o mesmo
+`pedido_erp` (`"616672_22160293"`) mas `empresa_fat` diferente (`"9"` vs
+`"2"`) — o upsert do Fusion por `(empresa_fat, pedido_orig)` não dedupia
+isso, então o pedido seria enviado duas vezes como dois pedidos
+distintos.
+
+Correção: todo `OR PR.IDEMPRESA(BAIXAEST)? = ?` em `integrations/ciss.py`
+(`_FILTRO_FUSION_CARGA`, `get_cargas_com_pedido_resolvido`,
+`get_carga_por_pedido`, `get_carga_por_nota`, `get_itens_carga`,
+`get_origem_pre_cargas_da_carga`) ganhou um `NOT EXISTS` — o fallback por
+`IDEMPRESABAIXAEST` só vale quando o item **não tem** cabeçalho próprio
+(`RETIRADA_PRODUTOS` por `PR.IDEMPRESA`/`PR.IDPLANILHA`) — nunca quando já
+existe um match direto, mesmo que outro cabeçalho de outra empresa também
+bata por `IDEMPRESABAIXAEST`. Não muda o caso original de entrega entre
+filiais (`2_22144917`): lá o item genuinamente não tinha cabeçalho na
+própria empresa, então o `NOT EXISTS` continua permitindo o fallback.
+
 ## Métodos do WSDL não implementados
 
 `atualizaCarga`/`cancelaCarga` (atualizar `dt_saida`/motorista/veículo ou
