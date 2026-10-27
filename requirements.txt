@@ -10,3 +10,7 @@ fusiondms-client==0.1.0
 # continua "fusion" — usado em integrations/fusion_portal.py.
 python-dotenv==1.0.1
 gunicorn==23.0.0
+APScheduler==3.11.0
+# Lock distribuído contra os 2 workers do gunicorn disparando o ciclo
+# automático de envio de pré-carga em dobro — ver cargas_fusion/auto_envio.py.
+redis==5.3.1

@@ -1,0 +1,47 @@
+# Redis só pra um lock (cargas_fusion/auto_envio.py — evita o ciclo
+# automático de envio de pré-carga disparar em dobro nos 2 workers do
+# gunicorn do backend). Sem PVC: perder o estado num restart não tem
+# consequência real, o pior caso é um tick a mais rodar antes do próximo
+# worker reconstruir o estado (nenhum dado de negócio mora aqui).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fusion-service-redis
+  namespace: fusion-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fusion-service-redis
+  template:
+    metadata:
+      labels:
+        app: fusion-service-redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+            - containerPort: 6379
+          readinessProbe:
+            tcpSocket:
+              port: 6379
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 6379
+            initialDelaySeconds: 10
+            periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fusion-service-redis
+  namespace: fusion-service
+spec:
+  selector:
+    app: fusion-service-redis
+  ports:
+    - port: 6379
+      targetPort: 6379

@@ -3,12 +3,22 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   buscarCargaFusionPorDocumento,
   enviarCargaFusion,
+  getAppConfig,
   getCargaFusionPreview,
   getCargasFusion,
   getEmpresasCargasFusion,
   marcarCargaFusionIntegrada,
 } from "@/api";
 import type { SelecaoEnvioCargaFusion } from "@/types";
+
+/** Flags de `.env` (`GET /api/config`) — hoje só `mostrar_cargas_ciss`,
+ * que decide se a aba de carga real (CISS) aparece no frontend. */
+export function useAppConfig() {
+  return useQuery({
+    queryKey: ["app-config"],
+    queryFn: getAppConfig,
+  });
+}
 
 export function useBuscarCargaPorDocumento() {
   return useMutation({

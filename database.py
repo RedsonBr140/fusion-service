@@ -41,13 +41,22 @@ def _migrar(conn: sqlite3.Connection) -> None:
     `veiculo_codigo_erp` quebraria com "no such column". `veiculo_id`
     fica, sem uso — sqlite3 não tem `DROP COLUMN` barato, e não há dado
     nela que valha migrar (era só uma FK pra uma tabela que não existe
-    mais)."""
+    mais).
+
+    `modo`: coluna nova pro envio "solto" de pré-carga de pedido único
+    (só `saveEntregaServico`, sem `saveCarga`) — banco existente nunca
+    tinha essa coluna, mesmo caso do `veiculo_codigo_erp` acima."""
     if _tabela_existe(conn, "cargas_fusion_precarga_fila"):
         colunas = _colunas(conn, "cargas_fusion_precarga_fila")
         if "veiculo_codigo_erp" not in colunas:
             conn.execute("ALTER TABLE cargas_fusion_precarga_fila ADD COLUMN veiculo_codigo_erp TEXT")
         if "veiculo_descricao" not in colunas:
             conn.execute("ALTER TABLE cargas_fusion_precarga_fila ADD COLUMN veiculo_descricao TEXT")
+        if "modo" not in colunas:
+            conn.execute(
+                "ALTER TABLE cargas_fusion_precarga_fila "
+                "ADD COLUMN modo TEXT NOT NULL DEFAULT 'BUNDLE' CHECK (modo IN ('BUNDLE', 'SOLTA'))"
+            )
 
 
 def init_database(path: str | Path) -> None:

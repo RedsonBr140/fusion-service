@@ -1,0 +1,84 @@
+# Pra testar o envio automático de pré-carga (cargas_fusion/auto_envio.py)
+# ANTES de ir pra produção — em particular, o lock no Redis contra os 2
+# workers do gunicorn (a imagem já roda `--workers 2`, igual produção,
+# ver Dockerfile).
+#
+# Uso:
+#   cp .env.development.example .env.development   # primeira vez só
+#   mkdir -p data-dev && chmod 777 data-dev  # a imagem roda como appuser
+#                                             # (não-root); sem isto, sqlite3
+#                                             # falha com "unable to open
+#                                             # database file" (bind mount
+#                                             # criado como root pelo Docker).
+#   docker compose -f docker-compose.dev.yml up --build
+#   docker compose -f docker-compose.dev.yml logs -f backend
+#   # confere a cada ~15s (intervalo curto só pra teste) se SÓ UMA linha
+#   # "Ciclo de auto-envio de pré-carga" aparece por ciclo.
+#
+# `.env.development` (gitignorado, ver .env.development.example) é onde
+# tudo preenchível mora — vazio por padrão, então `up` sem editar nada já
+# funciona e só prova o lock/scheduler, sem tocar CISS/Fusion de verdade
+# (guard "ciss_nao_configurado" em auto_envio.executar_ciclo).
+#
+# "Live test" de verdade (CISS/Fusion reais) — CUIDADO: nesse ponto você
+# sai de "teste de infraestrutura" e entra em "o ciclo automático vai
+# mandar dados reais pro Fusion de produção" — não existe Fusion "de
+# teste", é o mesmo webservice de sempre. Preencha CISS_DB_*/FUSION_* no
+# .env.development só quando estiver pronto pra isso, considere um
+# AUTO_ENVIO_PRE_CARGA_CORTE no passado (senão o default de produção,
+# 2026-10-28 08:00, segue bloqueando tudo — guard "antes_do_corte") e
+# pause pela UI (POST /api/pre-cargas/envio-automatico/pausar) assim que
+# o primeiro ciclo confirmar o que você queria ver.
+#
+# CISS DB2 real também exige o clidriver da IBM montado (proprietário,
+# não entra na imagem — ver k8s/db2-driver.yaml) e CISS_DB_DRIVER
+# apontando pra ele.
+#
+# PERIGO JÁ CONFIRMADO NA PRÁTICA, não repita: o Compose lê o `.env`
+# deste projeto (mesmo diretório) sozinho, e `CHAVE:` (sem valor, "null")
+# numa `environment:` do compose significa "pega do ambiente que invocou
+# o compose" — que inclui o que vier desse `.env` carregado
+# automaticamente. Isso já vazou CISS_DB_*/FUSION_* **reais de produção**
+# pro container numa tentativa anterior. Por isso REDIS_URL abaixo (a
+# única variável que precisa ficar fixa aqui, sempre apontando pro redis
+# deste compose) usa `""`-com-valor-explícito combinado com
+# `environment:` tendo prioridade sobre `env_file:` — nunca `CHAVE:`
+# sozinho.
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      - redis
+    ports:
+      - "5050:5050"
+    volumes:
+      - ./data-dev:/app/data
+      # Clidriver da IBM (proprietário, não entra na imagem — ver
+      # k8s/db2-driver.yaml) extraído em db2-clidriver-dev/ (gitignorado,
+      # vem de v11.5.9_linuxx64_odbc_cli.tar.gz). odbcinst.ini aqui dentro
+      # aponta Driver= pro mesmo caminho /opt/ibm/clidriver, batendo com o
+      # ConfigMap do k8s.
+      - ./db2-clidriver-dev:/opt/ibm/clidriver:ro
+    env_file:
+      - .env.development
+    environment:
+      # `environment:` tem prioridade sobre `env_file:` pro mesmo nome —
+      # garante que isto aponta pro redis deste compose mesmo se
+      # .env.development tiver (ou ganhar um dia) outro REDIS_URL.
+      REDIS_URL: "redis://redis:6379/0"
+      ODBCSYSINI: "/opt/ibm/clidriver"
+      LD_LIBRARY_PATH: "/opt/ibm/clidriver/lib"
+      # auto_envio.py::executar_ciclo usa datetime.now() ingênuo e compara
+      # direto contra DTMOVIMENTO do CISS (ingênuo, mas horário de
+      # Brasília — ver CLAUDE.md) e contra AUTO_ENVIO_PRE_CARGA_CORTE
+      # (escrito em horário de Brasília). Sem isto, a imagem roda em UTC e
+      # os dois ficam 3h fora de sincronia.
+      TZ: "America/Sao_Paulo"

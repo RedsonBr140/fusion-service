@@ -446,6 +446,50 @@ client de verdade) pra marcar `ENVIADA` e tirar a carga da lista sem
 esperar ação manual. Nunca dispara envio real ao Fusion a partir da
 listagem — só decide o caso em que não há nada genuíno pra enviar.
 
+## Envio "solto" de pré-carga: formação de carga dentro do próprio Fusion
+
+Motivado por um pedido de negócio, não um achado de produção: o gestor
+quer formar a carga manualmente dentro do Fusion ("Formação de carga",
+tela do portal) em vez de esperar o CISS formar a carga de verdade — e
+depois replicar essa mesma formação no CISS. Isso é regressão na
+automação (o agrupamento vira decisão manual duplicada, em dois
+sistemas, sem chave de correlação entre eles — ver discussão que motivou
+isto), mas o service precisa suportar o passo intermediário: deixar um
+pedido disponível pra seleção naquela tela.
+
+O modo padrão de pré-carga (`montar_payload_pre_carga`/
+`processar_envio_pre_carga`) já empacota a pré-carga inteira num
+`cargas[]` próprio (`codigo_erp = "PC_{id_empresa}_{id_precarga}"`, ver
+`codigo_pre_carga`) — ou seja, o pedido já chega ao Fusion **dentro** de
+uma carga, não disponível pra formação manual. O modo novo
+(`montar_payload_pre_carga_solta`/`processar_envio_pre_carga_solta`)
+manda só `saveEntregaServico`, nunca `saveCarga` — sem `cargas[]`, sem
+`entrega[]` stub, sem motorista/veículo (não há carga nenhuma sendo
+formada por esta tool nesse modo).
+
+**Confirmado em produção**: `podeformarcarga` é o campo que controla se
+a entrega aparece como agrupável em "Formação de carga" — `"S"` nesse
+modo novo, contra `"N"` no modo padrão (onde a tool já formou a carga e
+não quer que o motor de roteirização do Fusion reaproveite a entrega).
+
+Só vale pra pré-carga de **um único pedido** — uma pré-carga com mais de
+um pedido não tem como virar uma única entrega solta sem reintroduzir o
+mesmo problema que o modo padrão resolve (agrupamento sem um objeto que
+amarre os pedidos); `montar_payload_pre_carga_solta` devolve aviso
+bloqueante nesse caso, sem chamar o Fusion. `contar_pedidos` expõe a
+mesma contagem (`_agrupar_itens_por_pedido`) pro endpoint decidir
+`permite_envio_solto` no preview, e o frontend só mostra o botão
+("Enviar pedido solto") quando isso é `true`.
+
+Os dois modos coexistem na mesma linha de fila
+(`cargas_fusion_precarga_fila`, chave `(id_empresa, id_precarga)`) — uma
+coluna nova, `modo` (`'BUNDLE'`/`'SOLTA'`), distingue qual foi usado.
+Não há transição automática entre os dois: se uma pré-carga já foi
+enviada num modo, reenviar no outro modo é `forcar=True` explícito, e
+sobrescreve a linha (inclusive o `modo` gravado) — a tool não tenta
+"desfazer" o que já foi mandado ao Fusion no modo anterior (não daria,
+`cancelaCarga` não está implementado).
+
 ## Entrega entre filiais: item pode estar sob um `IDEMPRESA` diferente do cabeçalho da carga
 
 Achado em produção (carga `2_22144917`, reportada pelo usuário como "não

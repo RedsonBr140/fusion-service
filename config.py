@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -108,6 +109,57 @@ class Config:
     database_path: str = "fusion_service.db"
     port: int = 5050
 
+    mostrar_cargas_ciss: bool = False
+    """Liga a carga real (CISS, `RETIRADA_PRODUTOS`) na API e no frontend.
+    `False` por padrão: a formação de carga passou a acontecer dentro do
+    próprio Fusion ("Formação de carga", a partir de pedidos enviados
+    soltos — ver `montar_payload_pre_carga_solta`), então as rotas
+    `/cargas*` ficam bloqueadas (403) até alguém religar isto. Pré-carga
+    nunca é afetada por esta flag."""
+
+    somente_pedidos_soltos: bool = True
+    """Bloqueia o envio empacotado num `cargas[]`/`saveCarga` — tanto
+    carga real (`POST /cargas/.../enviar`) quanto pré-carga no modo
+    padrão (`POST /pre-cargas/.../enviar`, o `PC_...`). `True` por
+    padrão: só `POST /pre-cargas/.../enviar-solta` (`saveEntregaServico`
+    sem `cargas[]`) fica disponível, pra forçar a formação de carga a
+    acontecer dentro do Fusion. Independente de `mostrar_cargas_ciss` —
+    cobre o caso de alguém religar aquela sem pensar nesta."""
+
+    discord_webhook_url: str | None = None
+    """Opcional — sem ele, `cargas_fusion/auto_envio.py` só loga as
+    falhas/achados, nunca tenta `integrations/discord.py::notificar`."""
+
+    redis_url: str | None = None
+    """Backend do lock distribuído (`redis-py`) que evita o ciclo
+    automático (abaixo) disparar em dobro nos 2 workers do gunicorn —
+    ver `auto_envio_pre_carga_ativo`. Obrigatório só quando essa flag
+    está ligada (checado em `load_config`, não aqui)."""
+
+    auto_envio_pre_carga_ativo: bool = False
+    """Interruptor de ambiente pro ciclo automático de envio de
+    pré-carga solta (`cargas_fusion/auto_envio.py`) — mesmo espírito de
+    `mostrar_cargas_ciss`/`somente_pedidos_soltos`: nenhum ambiente
+    começa a mandar nada sozinho sem alguém ligar deliberadamente. A
+    pausa ao vivo (botão na UI, gravada em
+    `cargas_fusion_auto_envio_estado`) é um segundo nível, em cima
+    deste — liga aqui, pausa/retoma na tela sem redeploy."""
+
+    auto_envio_pre_carga_intervalo_segundos: int = 300
+    """A definir de verdade depois de medir a duração real de um ciclo
+    em produção — por ora um palpite conservador."""
+
+    auto_envio_pre_carga_janela_horas: int = 24
+
+    auto_envio_pre_carga_corte: datetime = datetime(2026, 10, 28, 8, 0, 0)
+    """Pré-carga com `DTMOVIMENTO` anterior a isto nunca é tocada pelo
+    ciclo automático — pedido explícito do negócio: só pré-carga
+    "nova" (depois da decisão de automatizar) entra na política
+    automática. Configurável via `AUTO_ENVIO_PRE_CARGA_CORTE` (ISO,
+    `AAAA-MM-DDTHH:MM:SS`) só pra permitir um teste local/live deliberado
+    contra uma janela mais antiga — o default de produção não muda só
+    porque isto existe."""
+
 
 def _required(env: Mapping[str, str], nome: str) -> str:
     valor = (env.get(nome) or "").strip()
@@ -119,6 +171,13 @@ def _required(env: Mapping[str, str], nome: str) -> str:
 def _optional(env: Mapping[str, str], nome: str) -> str | None:
     valor = (env.get(nome) or "").strip()
     return valor or None
+
+
+def _bool(env: Mapping[str, str], nome: str, default: bool) -> bool:
+    valor = (env.get(nome) or "").strip().lower()
+    if not valor:
+        return default
+    return valor in {"1", "true", "sim", "yes"}
 
 
 def _load_ciss_db(env: Mapping[str, str]) -> CissDbConfig | None:
@@ -193,6 +252,14 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         load_dotenv(Path(__file__).resolve().parent / ".env")
         env = os.environ
 
+    auto_envio_pre_carga_ativo = _bool(env, "AUTO_ENVIO_PRE_CARGA_ATIVO", False)
+    redis_url = _optional(env, "REDIS_URL")
+    if auto_envio_pre_carga_ativo and not redis_url:
+        raise ConfigError(
+            "AUTO_ENVIO_PRE_CARGA_ATIVO=true exige REDIS_URL — é o lock que evita "
+            "o ciclo automático disparar em dobro nos workers do gunicorn."
+        )
+
     return Config(
         secret_key=_required(env, "SECRET_KEY"),
         ciss_api_url=_required(env, "CISS_API_URL").rstrip("/"),
@@ -202,4 +269,18 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         fusion_portal=_load_fusion_portal(env),
         database_path=(env.get("DATABASE_PATH") or "fusion_service.db"),
         port=int(env.get("PORT") or 5050),
+        mostrar_cargas_ciss=_bool(env, "MOSTRAR_CARGAS_CISS", False),
+        somente_pedidos_soltos=_bool(env, "SOMENTE_PEDIDOS_SOLTOS", True),
+        discord_webhook_url=_optional(env, "DISCORD_WEBHOOK_URL"),
+        redis_url=redis_url,
+        auto_envio_pre_carga_ativo=auto_envio_pre_carga_ativo,
+        auto_envio_pre_carga_intervalo_segundos=int(
+            env.get("AUTO_ENVIO_PRE_CARGA_INTERVALO_SEGUNDOS") or 300
+        ),
+        auto_envio_pre_carga_janela_horas=int(env.get("AUTO_ENVIO_PRE_CARGA_JANELA_HORAS") or 24),
+        auto_envio_pre_carga_corte=(
+            datetime.fromisoformat(env["AUTO_ENVIO_PRE_CARGA_CORTE"])
+            if env.get("AUTO_ENVIO_PRE_CARGA_CORTE")
+            else datetime(2026, 10, 28, 8, 0, 0)
+        ),
     )

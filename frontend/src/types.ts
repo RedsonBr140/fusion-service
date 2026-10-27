@@ -9,6 +9,18 @@ export interface EmpresaEstoque {
   nome: string;
 }
 
+/** Flags lidas de `.env` (`config.py`), expostas via `GET /api/config`. */
+export interface AppConfig {
+  /** `false` por padrão — formação de carga passa a acontecer dentro do
+   * próprio Fusion; esconde a aba de carga real (CISS) no frontend
+   * enquanto estiver desligada. Nunca afeta pré-carga. */
+  mostrar_cargas_ciss: boolean;
+  /** `true` por padrão — esconde "Enviar carga ao Fusion" e "Enviar
+   * pré-carga ao Fusion" (os dois caminhos que empacotam num
+   * `cargas[]`/`saveCarga`), deixando só "Enviar pedido solto". */
+  somente_pedidos_soltos: boolean;
+}
+
 export interface CargaResumo {
   IDEMPRESA: number;
   IDPLANILHA: number;
@@ -176,6 +188,9 @@ export interface PreviewPreCargaFusion {
   /** O veículo escolhido, lido ao vivo do Fusion por `veiculo_codigo_erp`. */
   veiculo: VeiculoFusion | null;
   item_fila: ItemFilaPreCargaFusion | null;
+  /** `true` só quando a pré-carga resolve pra um único pedido — único
+   * caso em que o envio "solto" (`enviarPreCargaFusionSolta`) é permitido. */
+  permite_envio_solto: boolean;
 }
 
 export interface ItemFilaPreCargaFusion {
@@ -187,11 +202,32 @@ export interface ItemFilaPreCargaFusion {
   motorista_nome: string | null;
   veiculo_codigo_erp: string | null;
   veiculo_descricao: string | null;
+  /** "BUNDLE": envio padrão, empacotado num `cargas[]` do saveCarga.
+   * "SOLTA": só saveEntregaServico, pedido fica livre pra agrupamento
+   * manual na tela "Formação de carga" do Fusion. */
+  modo: "BUNDLE" | "SOLTA";
   status: "PENDENTE" | "ENVIADA";
   motivo: string | null;
   avisos: string[];
   tentativas: number;
   enviado_em: string | null;
+}
+
+/** Estado do ciclo automático de envio de pré-carga solta
+ * (cargas_fusion/auto_envio.py) — `GET /api/pre-cargas/envio-automatico`. */
+export interface EnvioAutomaticoEstado {
+  pausado: boolean;
+  ultima_execucao_em: string | null;
+  ultima_execucao_duracao_ms: number | null;
+  ultima_execucao_candidatas: number | null;
+  ultima_execucao_enviadas: number | null;
+  ultima_execucao_falhas: number | null;
+  /** Pré-carga com mais de um pedido, vista pelo ciclo mas nunca
+   * enviada por ele — medida de impacto, não um erro do ciclo. */
+  multi_pedido_ignorado: {
+    total: number;
+    por_empresa: { id_empresa: number; qtd: number }[];
+  };
 }
 
 /** Lido ao vivo do portal do Fusion (fusion-py), não de cadastro local —

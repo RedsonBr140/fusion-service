@@ -17,6 +17,13 @@ def config(tmp_path: Path) -> Config:
         fusion_portal=None,
         database_path=str(tmp_path / "fusion_service.db"),
         port=5050,
+        # Suíte legada testa a carga real (CISS) ligada e o envio
+        # empacotado em carga permitido — os dois defaults de produção
+        # (ver config.py) têm seus próprios testes dedicados em
+        # test_cargas_fusion_routes.py, com a flag explicitamente no
+        # valor de produção.
+        mostrar_cargas_ciss=True,
+        somente_pedidos_soltos=False,
     )
 
 

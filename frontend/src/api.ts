@@ -9,9 +9,11 @@
 
 import type {
   AjudanteFusion,
+  AppConfig,
   CandidatoPessoaCiss,
   CargaResumo,
   EmpresaEstoque,
+  EnvioAutomaticoEstado,
   ItemFilaFusion,
   ItemFilaPreCargaFusion,
   MotoristaFusion,
@@ -101,6 +103,10 @@ export function login(
  * carregamento da página, pra restaurar a sessão sem pedir login de novo. */
 export function getMe(): Promise<{ user: { ciss_code: string | null; name: string } }> {
   return request("/api/me");
+}
+
+export function getAppConfig(): Promise<AppConfig> {
+  return request("/api/config");
 }
 
 export function logout(): Promise<void> {
@@ -247,12 +253,45 @@ export function enviarPreCargaFusion(
   });
 }
 
+/** Modo "solto": só `saveEntregaServico`, nunca `saveCarga` — o pedido
+ * fica disponível pra agrupamento manual na tela "Formação de carga" do
+ * próprio Fusion, em vez de já chegar empacotado num `cargas[]`. Só
+ * permitido quando o preview devolve `permite_envio_solto` (pré-carga
+ * de pedido único) — sem motorista/veículo/dt_saida, que não existem
+ * nesse modo. */
+export function enviarPreCargaFusionSolta(
+  idEmpresa: number,
+  idPrecarga: number,
+  itens?: number[] | null,
+  forcar = false
+): Promise<ResultadoEnvioCargaFusion> {
+  return request(`/api/pre-cargas/${idEmpresa}/${idPrecarga}/enviar-solta`, {
+    method: "POST",
+    body: JSON.stringify({
+      itens: itens ?? undefined,
+      forcar: forcar || undefined,
+    }),
+  });
+}
+
 export function getFilaPreCargasFusion(todas = false): Promise<{ fila: ItemFilaPreCargaFusion[] }> {
   return request(`/api/pre-cargas/fila${todas ? "?todas=1" : ""}`);
 }
 
 export function removerDaFilaPreCargasFusion(id: number): Promise<void> {
   return request(`/api/pre-cargas/fila/${id}`, { method: "DELETE" });
+}
+
+export function getEnvioAutomaticoEstado(): Promise<EnvioAutomaticoEstado> {
+  return request("/api/pre-cargas/envio-automatico");
+}
+
+export function pausarEnvioAutomatico(): Promise<EnvioAutomaticoEstado> {
+  return request("/api/pre-cargas/envio-automatico/pausar", { method: "POST" });
+}
+
+export function retomarEnvioAutomatico(): Promise<EnvioAutomaticoEstado> {
+  return request("/api/pre-cargas/envio-automatico/retomar", { method: "POST" });
 }
 
 // --- Veículo e motorista: ao vivo no Fusion, sem cadastro local ------------

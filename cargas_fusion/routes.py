@@ -10,12 +10,14 @@ allow-list local no login direto.
 
 from __future__ import annotations
 
+from functools import wraps
+
 from datetime import datetime
 
 from flask import Blueprint, current_app, jsonify, request
 
 from auth.decorators import login_required
-from cargas_fusion import service
+from cargas_fusion import auto_envio, service
 from database import get_db
 from integrations.ciss import CissDbError
 from integrations.fusion_portal import FusionPortalError
@@ -29,6 +31,47 @@ MSG_CISS_INDISPONIVEL = "Consulta ao CISS DB2 indisponível. Tente novamente."
 MSG_PERIODO_INVALIDO = "Informe data_inicial e data_final em ISO (AAAA-MM-DDTHH:MM:SS)."
 MSG_CARGA_NAO_ENCONTRADA = "Carga não encontrada."
 MSG_DT_SAIDA_INVALIDA = "Data de saída inválida."
+MSG_CARGAS_CISS_DESLIGADAS = (
+    "Carga real (CISS) desligada — MOSTRAR_CARGAS_CISS=false. Use pré-carga."
+)
+MSG_SOMENTE_PEDIDOS_SOLTOS = (
+    "Envio empacotado em carga desligado — SOMENTE_PEDIDOS_SOLTOS=true. "
+    "Use /pre-cargas/<id_empresa>/<id_precarga>/enviar-solta."
+)
+
+
+def requer_cargas_ciss(view):
+    """Bloqueia as rotas de carga real (CISS) quando `MOSTRAR_CARGAS_CISS`
+    está desligada (padrão) — a formação de carga passou a acontecer
+    dentro do próprio Fusion, a partir de pedidos enviados soltos (ver
+    `montar_payload_pre_carga_solta`). Nunca afeta pré-carga: aplicado só
+    nas rotas de `/cargas*` e na fila de carga real (`/fila`)."""
+
+    @wraps(view)
+    def wrapper(*args, **kwargs):
+        if not current_app.config["APP_CONFIG"].mostrar_cargas_ciss:
+            return jsonify({"error": MSG_CARGAS_CISS_DESLIGADAS}), 403
+        return view(*args, **kwargs)
+
+    return wrapper
+
+
+def requer_envio_em_carga(view):
+    """Bloqueia o envio empacotado num `saveCarga` (carga real e
+    pré-carga no modo padrão, `PC_...`) quando `SOMENTE_PEDIDOS_SOLTOS`
+    está ligada (padrão) — só `saveEntregaServico` solto
+    (`/enviar-solta`) fica disponível, pra forçar a formação de carga a
+    acontecer dentro do Fusion. Independente de `requer_cargas_ciss`:
+    cobre o caso de `mostrar_cargas_ciss` ser religada sem pensar nesta
+    flag."""
+
+    @wraps(view)
+    def wrapper(*args, **kwargs):
+        if current_app.config["APP_CONFIG"].somente_pedidos_soltos:
+            return jsonify({"error": MSG_SOMENTE_PEDIDOS_SOLTOS}), 403
+        return view(*args, **kwargs)
+
+    return wrapper
 
 
 def _ciss_client():
@@ -194,6 +237,7 @@ def _montar_preview_pre_carga(
 
 @bp.get("/cargas")
 @login_required
+@requer_cargas_ciss
 def buscar_cargas():
     periodo = _periodo_da_query()
     if periodo is None:
@@ -260,6 +304,7 @@ def buscar_cargas():
 
 @bp.get("/cargas/busca-documento")
 @login_required
+@requer_cargas_ciss
 def buscar_carga_por_documento():
     termo = (request.args.get("termo") or "").strip()
     if not termo:
@@ -298,6 +343,7 @@ def listar_empresas():
 
 @bp.get("/cargas/<int:id_empresa>/<int:id_planilha>")
 @login_required
+@requer_cargas_ciss
 def ver_carga(id_empresa: int, id_planilha: int):
     client = _ciss_client()
     if client is None:
@@ -353,6 +399,8 @@ def ver_carga(id_empresa: int, id_planilha: int):
 
 @bp.post("/cargas/<int:id_empresa>/<int:id_planilha>/enviar")
 @login_required
+@requer_cargas_ciss
+@requer_envio_em_carga
 def enviar_carga(id_empresa: int, id_planilha: int):
     client = _ciss_client()
     if client is None:
@@ -408,6 +456,7 @@ def enviar_carga(id_empresa: int, id_planilha: int):
 
 @bp.post("/cargas/<int:id_empresa>/<int:id_planilha>/marcar-integrada")
 @login_required
+@requer_cargas_ciss
 def marcar_carga_integrada(id_empresa: int, id_planilha: int):
     client = _ciss_client()
     if client is None:
@@ -510,6 +559,10 @@ def ver_pre_carga(id_empresa: int, id_precarga: int):
                 "motorista": motorista,
                 "veiculo": veiculo,
                 "item_fila": item_fila,
+                # Só permite o botão de "enviar solta" no frontend quando a
+                # pré-carga resolve pra um único pedido — ver
+                # service.montar_payload_pre_carga_solta.
+                "permite_envio_solto": service.contar_pedidos(itens_todos) == 1,
             }
         ),
         200,
@@ -518,6 +571,7 @@ def ver_pre_carga(id_empresa: int, id_precarga: int):
 
 @bp.post("/pre-cargas/<int:id_empresa>/<int:id_precarga>/enviar")
 @login_required
+@requer_envio_em_carga
 def enviar_pre_carga(id_empresa: int, id_precarga: int):
     client = _ciss_client()
     if client is None:
@@ -578,6 +632,52 @@ def enviar_pre_carga(id_empresa: int, id_precarga: int):
     return jsonify(saida), 200
 
 
+@bp.post("/pre-cargas/<int:id_empresa>/<int:id_precarga>/enviar-solta")
+@login_required
+def enviar_pre_carga_solta(id_empresa: int, id_precarga: int):
+    """Modo alternativo: manda só `saveEntregaServico`, sem `saveCarga` —
+    pedido fica disponível pra agrupamento manual em "Formação de carga"
+    no próprio Fusion, em vez de já chegar empacotado num `cargas[]`. Só
+    vale pra pré-carga de pedido único; mais de um pedido devolve 400
+    sem chamar o Fusion (`service.montar_payload_pre_carga_solta` que
+    decide isso, via aviso bloqueante)."""
+    client = _ciss_client()
+    if client is None:
+        return jsonify({"error": MSG_CISS_NAO_CONFIGURADO}), 503
+
+    corpo = _corpo()
+
+    try:
+        resultado = service.preparar_envio_pre_carga_solta(
+            client,
+            id_empresa,
+            id_precarga,
+            itens_selecionados=_selecao_de_itens(corpo.get("itens")),
+        )
+    except CissDbError:
+        return jsonify({"error": MSG_CISS_INDISPONIVEL}), 503
+
+    if resultado is None:
+        return jsonify({"error": MSG_CARGA_NAO_ENCONTRADA}), 404
+
+    payload_entregas_servico, avisos, avisos_bloqueantes, _itens_todos, clientes = resultado
+
+    saida = service.processar_envio_pre_carga_solta(
+        get_db(),
+        _fusion_client(),
+        id_empresa,
+        id_precarga,
+        service.codigo_pre_carga(id_empresa, id_precarga),
+        payload_entregas_servico,
+        avisos,
+        avisos_bloqueantes,
+        clientes_por_idclifor=clientes,
+        fusion_portal_client=_fusion_portal_client(),
+        forcar=bool(corpo.get("forcar")),
+    )
+    return jsonify(saida), 200
+
+
 @bp.get("/pre-cargas/fila")
 @login_required
 def ver_fila_pre_cargas():
@@ -596,11 +696,38 @@ def remover_da_fila_pre_carga(id_: int):
     return "", 204
 
 
+# --- Envio automático de pré-carga solta --------------------------------
+
+
+@bp.get("/pre-cargas/envio-automatico")
+@login_required
+def ver_estado_envio_automatico():
+    conn = get_db()
+    estado = auto_envio.obter_estado(conn)
+    estado["multi_pedido_ignorado"] = auto_envio.resumo_multi_pedido(conn)
+    return jsonify(estado), 200
+
+
+@bp.post("/pre-cargas/envio-automatico/pausar")
+@login_required
+def pausar_envio_automatico():
+    auto_envio.pausar(get_db())
+    return jsonify(auto_envio.obter_estado(get_db())), 200
+
+
+@bp.post("/pre-cargas/envio-automatico/retomar")
+@login_required
+def retomar_envio_automatico():
+    auto_envio.retomar(get_db())
+    return jsonify(auto_envio.obter_estado(get_db())), 200
+
+
 # --- Fila de envio -----------------------------------------------------
 
 
 @bp.get("/fila")
 @login_required
+@requer_cargas_ciss
 def ver_fila():
     apenas_pendentes = request.args.get("todas") != "1"
     return jsonify({"fila": service.listar_fila(get_db(), apenas_pendentes=apenas_pendentes)}), 200
@@ -608,6 +735,7 @@ def ver_fila():
 
 @bp.delete("/fila/<int:id_>")
 @login_required
+@requer_cargas_ciss
 def remover_da_fila(id_: int):
     if not service.remover_da_fila(get_db(), id_):
         return jsonify({"error": "Item da fila não encontrado."}), 404

@@ -5,7 +5,9 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { BuscaCargasSection } from "@/tools/cargas_fusion/BuscaCargasSection";
 import { CadastroPessoaSection } from "@/tools/cargas_fusion/CadastroPessoaSection";
+import { EnvioAutomaticoStatus } from "@/tools/cargas_fusion/EnvioAutomaticoStatus";
 import { FusionServiceLoginForm } from "@/tools/cargas_fusion/FusionServiceLoginForm";
+import { HistoricoPreCargaSection } from "@/tools/cargas_fusion/HistoricoPreCargaSection";
 import { HistoricoSection } from "@/tools/cargas_fusion/HistoricoSection";
 import {
   useAjudantes,
@@ -14,6 +16,7 @@ import {
   useCriarAjudante,
   useSincronizarAjudante,
 } from "@/tools/cargas_fusion/useCadastroFusion";
+import { useAppConfig } from "@/tools/cargas_fusion/useCargasFusion";
 import { useFusionServiceAuth } from "@/tools/cargas_fusion/useFusionServiceAuth";
 
 type Secao = "busca" | "historico" | "ajudantes";
@@ -26,6 +29,9 @@ const ABAS: { chave: Secao; rotulo: string }[] = [
 
 export function CargasFusionPage() {
   const fusionAuth = useFusionServiceAuth();
+  const appConfig = useAppConfig();
+  const mostrarCargasCiss = appConfig.data?.mostrar_cargas_ciss ?? false;
+  const somentePedidosSoltos = appConfig.data?.somente_pedidos_soltos ?? true;
   const [secao, setSecao] = useState<Secao>("busca");
   const [cargaNoHistorico, setCargaNoHistorico] = useState<{
     idEmpresa: number;
@@ -77,6 +83,8 @@ export function CargasFusionPage() {
 
           {fusionAuth.status === "ready" && (
             <>
+              <EnvioAutomaticoStatus />
+
               <div className="flex flex-wrap gap-2 border-b border-border pb-4">
                 {ABAS.map((aba) => (
                   <Button
@@ -92,9 +100,18 @@ export function CargasFusionPage() {
               </div>
 
               {secao === "busca" && (
-                <BuscaCargasSection cargaPreSelecionada={cargaNoHistorico} />
+                <BuscaCargasSection
+                  cargaPreSelecionada={cargaNoHistorico}
+                  mostrarCargasCiss={mostrarCargasCiss}
+                  somentePedidosSoltos={somentePedidosSoltos}
+                />
               )}
-              {secao === "historico" && <HistoricoSection onAbrirCarga={abrirCargaDoHistorico} />}
+              {secao === "historico" &&
+                (mostrarCargasCiss ? (
+                  <HistoricoSection onAbrirCarga={abrirCargaDoHistorico} />
+                ) : (
+                  <HistoricoPreCargaSection />
+                ))}
               {secao === "ajudantes" && (
                 <CadastroPessoaSection
                   tipo="ajudante"

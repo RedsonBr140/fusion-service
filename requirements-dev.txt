@@ -1,3 +1,7 @@
 -r requirements.txt
 pytest==8.3.3
 responses==0.25.3
+fakeredis==2.30.3
+# fakeredis precisa disto pra EVAL/EVALSHA — redis-py's Lock usa um
+# script Lua internamente pra acquire/release atômico.
+lupa==2.8

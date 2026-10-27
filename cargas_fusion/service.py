@@ -624,6 +624,14 @@ def _agrupar_itens_por_pedido(
     return [(chave, grupos[chave]) for chave in ordem]
 
 
+def contar_pedidos(itens: Sequence[Mapping[str, object]]) -> int:
+    """Quantos pedidos (não itens) uma lista de itens resolve pra —
+    `_agrupar_itens_por_pedido` é a mesma noção de "pedido" que decide
+    se o envio solto (`montar_payload_pre_carga_solta`) é permitido:
+    só quando isto dá 1."""
+    return len(_agrupar_itens_por_pedido(itens))
+
+
 # Brasília, sem DST desde 2019 — mesmo offset fixo de integrations/ciss.py
 # (_FUSO_CISS). `_dt_saida_padrao` precisa do horário de Brasília mesmo
 # quando o processo não roda mais numa VM em Brasília: containerizado, o
@@ -1044,6 +1052,155 @@ def montar_payload_pre_carga(
     )
 
 
+def montar_payload_pre_carga_solta(
+    detalhe: Mapping[str, object],
+    itens: Sequence[Mapping[str, object]],
+    clientes_por_idclifor: Mapping[int, Mapping[str, object] | None],
+) -> tuple[list[dict], list[str], list[str]]:
+    """Modo alternativo de envio de pré-carga: só `saveEntregaServico`,
+    nunca `saveCarga` — o pedido chega ao Fusion sem estar empacotado
+    dentro de um `cargas[]` (`PC_...`, ver `montar_payload_pre_carga`),
+    pra ficar disponível na tela "Formação de carga" do próprio Fusion
+    pra quem for agrupar manualmente lá. Sem motorista/veículo, sem
+    `entrega[]` stub, sem `cargas[]` — não existe carga nenhuma sendo
+    formada por esta tool neste modo.
+
+    Só existe pra pré-carga de **um único pedido**: não há como uma
+    pré-carga com mais de um pedido virar uma única entrega solta sem
+    reintroduzir o mesmo problema que o modo padrão resolve (agrupamento
+    sem um objeto que amarre os pedidos). Mais de um pedido devolve lista
+    vazia com aviso bloqueante — quem chama nunca deveria enviar nesse
+    caso.
+
+    `podeformarcarga` vai como `"S"` aqui (modo padrão manda `"N"`,
+    porque lá a tool já formou a carga) — confirmado contra produção que
+    é esse campo mesmo que libera a entrega pra aparecer como agrupável
+    em "Formação de carga".
+
+    Devolve `(payload_entregas_servico, avisos, avisos_bloqueantes)` —
+    sem o `payload_carga` que `_montar_payload` devolve, porque não há
+    carga neste modo."""
+    avisos: list[str] = []
+    avisos_bloqueantes: list[str] = []
+
+    def _aviso(texto: str, *, bloqueante: bool = True) -> None:
+        avisos.append(texto)
+        if bloqueante:
+            avisos_bloqueantes.append(texto)
+
+    if not itens:
+        _aviso("Nenhuma entrega selecionada para esta pré-carga.")
+        return [], avisos, avisos_bloqueantes
+
+    grupos = list(_agrupar_itens_por_pedido(itens))
+    if len(grupos) != 1:
+        _aviso(
+            f"Pré-carga tem {len(grupos)} pedido(s) — envio solto só é permitido "
+            "para pré-carga de um único pedido."
+        )
+        return [], avisos, avisos_bloqueantes
+
+    id_pedido_origem, itens_do_pedido = grupos[0]
+    id_empresa = detalhe["IDEMPRESA"]
+    id_precarga = detalhe["IDPRECARGA"]
+    primeiro = itens_do_pedido[0]
+
+    numero_pedido = primeiro.get("IDORCAMENTO")
+    if numero_pedido is None:
+        _aviso(
+            f"Pedido (orçamento) do item {id_pedido_origem} não encontrado no CISS — "
+            "entrega não enviada ao Fusion.",
+        )
+        return [], avisos, avisos_bloqueantes
+
+    id_clifor = primeiro.get("IDCLIFORENTREGA") or primeiro.get("IDCLIFOR")
+    cliente_ciss = clientes_por_idclifor.get(id_clifor) if id_clifor else None
+    if id_clifor and cliente_ciss is None:
+        _aviso(f"Cliente {id_clifor} do pedido {id_pedido_origem} não encontrado no CISS.")
+
+    cod_pedido = codigo_pedido_generico(numero_pedido, f"PC{id_precarga}")
+    valor_total = sum(_numero(i.get("VALTOTLIQUIDO")) or 0 for i in itens_do_pedido)
+    peso_total = sum(_peso_item(i) for i in itens_do_pedido)
+    cubagem_total = sum(
+        (_numero(i.get("LARGURA")) or 0)
+        * (_numero(i.get("ALTURA")) or 0)
+        * (_numero(i.get("COMPRIMENTO")) or 0)
+        * (_numero(i.get("QTDPRODUTO")) or 0)
+        for i in itens_do_pedido
+    ) / 1_000_000
+
+    entrega_servico = {
+        "pedido_erp": cod_pedido,
+        "num_ped_conf": cod_pedido,
+        "pedido_orig": cod_pedido,
+        "nf": _texto(primeiro.get("NUMNOTA")) or "",
+        "serie": _texto(primeiro.get("SERIENOTA")) or "",
+        "obs": _texto(primeiro.get("ORCAMENTO_OBSERVACAO")) or "",
+        "valor": _numero_informado(valor_total),
+        "peso": _numero_informado(peso_total),
+        "vendedor_erp": _texto(primeiro.get("IDVENDEDOR")) or "",
+        "empresa_fat": str(id_empresa),
+        "empresa_log": str(id_empresa),
+        "empresa_digit": str(id_empresa),
+        "cubagem": _numero_informado(cubagem_total),
+        "podeformarcarga": "S",
+        "codigo_cliente": str((cliente_ciss or {}).get("CODIGO_CLIENTE") or ""),
+        "filial_padrao": str(id_empresa),
+        "praca_cod_erp": "1",
+        "praca_descricao": ".",
+        "rota_cod_erp": "1",
+        "rota_descricao": ".",
+        "ent_ou_serv": "Entrega",
+        "status": "1",
+        "itens": [
+            {
+                "cod_produto_erp": str(i.get("IDSUBPRODUTO") or ""),
+                "qtd": _numero_informado(_numero(i.get("QTDPRODUTO")) or 0),
+                "peso": _numero_informado(_peso_item(i)),
+                "preco": _numero_informado(_preco_item(i)),
+                "subtotal": _numero_informado(_numero(i.get("VALTOTLIQUIDO")) or 0),
+                "descricao": _texto(i.get("DESCRCOMPRODUTO")) or "",
+            }
+            for i in itens_do_pedido
+        ],
+    }
+    return [entrega_servico], avisos, avisos_bloqueantes
+
+
+def preparar_envio_pre_carga_solta(
+    client,
+    id_empresa: int,
+    id_precarga: int,
+    *,
+    itens_selecionados: set[int] | None = None,
+) -> tuple[list[dict], list[str], list[str], list[Mapping[str, object]], dict] | None:
+    """Busca no CISS (`client`, `CissClient`) tudo que
+    `montar_payload_pre_carga_solta` precisa e monta o payload — extraído
+    de `cargas_fusion/routes.py` (`_montar_preview_pre_carga_solta`) pra
+    ser reusado tanto pela rota HTTP (`enviar_pre_carga_solta`) quanto
+    pelo ciclo automático (`cargas_fusion/auto_envio.py`); é lógica de
+    negócio pura, não tem nada de Flask.
+
+    `None` quando a pré-carga não existe. Devolve
+    `(payload_entregas_servico, avisos, avisos_bloqueantes, itens_todos,
+    clientes_por_idclifor)`."""
+    detalhe = client.get_pre_carga_detalhe(id_empresa, id_precarga)
+    if detalhe is None:
+        return None
+
+    itens_todos = client.get_itens_pre_carga(id_precarga)
+    itens = filtrar_itens_selecionados(itens_todos, itens_selecionados)
+
+    ids_clifor = {item.get("IDCLIFORENTREGA") or item.get("IDCLIFOR") for item in itens}
+    ids_clifor.discard(None)
+    clientes = {idc: client.get_cliente_fusion(idc) for idc in ids_clifor}
+
+    payload_entregas_servico, avisos, avisos_bloqueantes = montar_payload_pre_carga_solta(
+        detalhe, itens, clientes
+    )
+    return payload_entregas_servico, avisos, avisos_bloqueantes, itens_todos, clientes
+
+
 def filtrar_itens_selecionados(
     itens: Sequence[Mapping[str, object]], numeros_sequencia: set[int] | None
 ) -> list[Mapping[str, object]]:
@@ -1354,6 +1511,7 @@ def _linha_fila_pre_carga(linha: sqlite3.Row) -> dict[str, object]:
         "motorista_nome": linha["motorista_nome"],
         "veiculo_codigo_erp": linha["veiculo_codigo_erp"],
         "veiculo_descricao": linha["veiculo_descricao"],
+        "modo": linha["modo"],
         "status": linha["status"],
         "motivo": linha["motivo"],
         "avisos": json.loads(linha["avisos"]) if linha["avisos"] else [],
@@ -1474,18 +1632,20 @@ def _registrar_falha_na_fila_pre_carga(
     veiculo_descricao: str | None,
     motivo: str,
     avisos: Sequence[str],
+    *,
+    modo: str = "BUNDLE",
 ) -> dict:
     with conn:
         conn.execute(
             "INSERT INTO cargas_fusion_precarga_fila "
             "(id_empresa, id_precarga, codigo_erp, motorista_codigo_erp, motorista_nome, "
-            "veiculo_codigo_erp, veiculo_descricao, status, motivo, avisos, tentativas) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDENTE', ?, ?, 1) "
+            "veiculo_codigo_erp, veiculo_descricao, modo, status, motivo, avisos, tentativas) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDENTE', ?, ?, 1) "
             "ON CONFLICT (id_empresa, id_precarga) DO UPDATE SET "
             "codigo_erp = excluded.codigo_erp, motorista_codigo_erp = excluded.motorista_codigo_erp, "
             "motorista_nome = excluded.motorista_nome, "
             "veiculo_codigo_erp = excluded.veiculo_codigo_erp, "
-            "veiculo_descricao = excluded.veiculo_descricao, status = 'PENDENTE', "
+            "veiculo_descricao = excluded.veiculo_descricao, modo = excluded.modo, status = 'PENDENTE', "
             "motivo = excluded.motivo, avisos = excluded.avisos, "
             "tentativas = cargas_fusion_precarga_fila.tentativas + 1, "
             "updated_at = CURRENT_TIMESTAMP",
@@ -1497,6 +1657,7 @@ def _registrar_falha_na_fila_pre_carga(
                 motorista_nome,
                 veiculo_codigo_erp,
                 veiculo_descricao,
+                modo,
                 motivo,
                 json.dumps(list(avisos), ensure_ascii=False),
             ),
@@ -1513,22 +1674,24 @@ def _marcar_enviada_na_fila_pre_carga(
     motorista_nome: str | None,
     veiculo_codigo_erp: str | None,
     veiculo_descricao: str | None,
+    *,
+    modo: str = "BUNDLE",
 ) -> dict:
     with conn:
         conn.execute(
             "INSERT INTO cargas_fusion_precarga_fila "
             "(id_empresa, id_precarga, codigo_erp, motorista_codigo_erp, motorista_nome, "
-            "veiculo_codigo_erp, veiculo_descricao, status, motivo, avisos, tentativas, enviado_em) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, 'ENVIADA', NULL, '[]', 0, CURRENT_TIMESTAMP) "
+            "veiculo_codigo_erp, veiculo_descricao, modo, status, motivo, avisos, tentativas, enviado_em) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ENVIADA', NULL, '[]', 0, CURRENT_TIMESTAMP) "
             "ON CONFLICT (id_empresa, id_precarga) DO UPDATE SET "
             "codigo_erp = excluded.codigo_erp, motorista_codigo_erp = excluded.motorista_codigo_erp, "
             "motorista_nome = excluded.motorista_nome, "
             "veiculo_codigo_erp = excluded.veiculo_codigo_erp, "
-            "veiculo_descricao = excluded.veiculo_descricao, status = 'ENVIADA', motivo = NULL, "
+            "veiculo_descricao = excluded.veiculo_descricao, modo = excluded.modo, status = 'ENVIADA', motivo = NULL, "
             "enviado_em = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP",
             (
                 id_empresa, id_precarga, codigo_erp, motorista_codigo_erp, motorista_nome,
-                veiculo_codigo_erp, veiculo_descricao,
+                veiculo_codigo_erp, veiculo_descricao, modo,
             ),
         )
     return buscar_item_fila_pre_carga(conn, id_empresa, id_precarga)
@@ -1651,5 +1814,90 @@ def processar_envio_pre_carga(
     fila = _marcar_enviada_na_fila_pre_carga(
         conn, id_empresa, id_precarga, codigo_erp, motorista_codigo_erp, motorista_nome,
         veiculo_codigo_erp, veiculo_descricao,
+    )
+    return {"status": "enviada", "resultado": resultado, "fila": fila}
+
+
+def processar_envio_pre_carga_solta(
+    conn: sqlite3.Connection,
+    fusion_client: FusionClient | None,
+    id_empresa: int,
+    id_precarga: int,
+    codigo_erp: str,
+    payload_entregas_servico: Sequence[Mapping[str, object]],
+    avisos: Sequence[str],
+    avisos_bloqueantes: Sequence[str],
+    *,
+    clientes_por_idclifor: Mapping[int, Mapping[str, object] | None] | None = None,
+    fusion_portal_client: FusionPortalClient | None = None,
+    forcar: bool = False,
+) -> dict:
+    """Modo "solto" de `processar_envio_pre_carga` — só `saveEntregaServico`,
+    nunca `saveCarga` (ver `montar_payload_pre_carga_solta`). Sem
+    motorista/veículo: não há `cargas[]` pra anexar eles, então a fila
+    deste modo sempre grava esses dois campos como `NULL`, mesmo
+    compartilhando as colunas com o modo padrão. Grava `modo='SOLTA'`
+    pra `listar_fila_pre_cargas`/`pre_cargas_ja_enviadas` distinguirem os
+    dois modos."""
+    if not forcar:
+        item_existente = buscar_item_fila_pre_carga(conn, id_empresa, id_precarga)
+        if item_existente is not None and item_existente["status"] == "ENVIADA":
+            return {"status": "ja_enviada", "fila": item_existente}
+
+    if avisos_bloqueantes:
+        motivo = "; ".join(avisos)
+        fila = _registrar_falha_na_fila_pre_carga(
+            conn, id_empresa, id_precarga, codigo_erp, None, None, None, None, motivo, avisos,
+            modo="SOLTA",
+        )
+        return {"status": "pendente", "motivo": motivo, "avisos": list(avisos), "fila": fila}
+
+    if not payload_entregas_servico:
+        fila = _marcar_enviada_na_fila_pre_carga(
+            conn, id_empresa, id_precarga, codigo_erp, None, None, None, None, modo="SOLTA",
+        )
+        return {"status": "enviada", "resultado": None, "fila": fila}
+
+    if fusion_client is None:
+        fila = _registrar_falha_na_fila_pre_carga(
+            conn, id_empresa, id_precarga, codigo_erp, None, None, None, None,
+            "Fusion não configurado.", (), modo="SOLTA",
+        )
+        return {"status": "pendente", "motivo": "Fusion não configurado.", "avisos": [], "fila": fila}
+
+    if clientes_por_idclifor:
+        erro_sync = _sincronizar_clientes_pendentes(
+            conn,
+            fusion_client,
+            clientes_por_idclifor,
+            id_empresa,
+            fusion_portal_client=fusion_portal_client,
+        )
+        if erro_sync:
+            fila = _registrar_falha_na_fila_pre_carga(
+                conn, id_empresa, id_precarga, codigo_erp, None, None, None, None,
+                erro_sync, (), modo="SOLTA",
+            )
+            return {"status": "pendente", "motivo": erro_sync, "avisos": [], "fila": fila}
+
+    try:
+        resultado = fusion_client.save_entrega_servico(list(payload_entregas_servico))
+    except FusionUnavailable:
+        fila = _registrar_falha_na_fila_pre_carga(
+            conn, id_empresa, id_precarga, codigo_erp, None, None, None, None,
+            "Fusion indisponível.", (), modo="SOLTA",
+        )
+        return {"status": "pendente", "motivo": "Fusion indisponível.", "avisos": [], "fila": fila}
+
+    sucesso, motivo = _resultado_indica_sucesso(resultado)
+    if not sucesso:
+        fila = _registrar_falha_na_fila_pre_carga(
+            conn, id_empresa, id_precarga, codigo_erp, None, None, None, None,
+            motivo, (), modo="SOLTA",
+        )
+        return {"status": "pendente", "motivo": motivo, "avisos": [], "resultado": resultado, "fila": fila}
+
+    fila = _marcar_enviada_na_fila_pre_carga(
+        conn, id_empresa, id_precarga, codigo_erp, None, None, None, None, modo="SOLTA",
     )
     return {"status": "enviada", "resultado": resultado, "fila": fila}

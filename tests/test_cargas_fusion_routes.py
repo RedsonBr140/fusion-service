@@ -7,6 +7,8 @@ original, sem precisar tocar nos ~150 call sites de `client.get/post/...`.
 CISS e Fusion são sempre dublês.
 """
 
+import dataclasses
+
 import pytest
 
 from auth import tokens
@@ -282,6 +284,115 @@ ITEM2 = {
     "SERIENOTA": "2", "IDCLIFOR": 26623, "IDCLIFORENTREGA": 26623,
     "VALTOTLIQUIDO": 50.0, "PESOBRUTO": 1.0,
 }
+
+
+# --- MOSTRAR_CARGAS_CISS desligada (padrão) ---------------------------------
+
+
+def _desligar_cargas_ciss(app, config):
+    app.config["APP_CONFIG"] = dataclasses.replace(config, mostrar_cargas_ciss=False)
+
+
+def test_mostrar_cargas_ciss_desligada_bloqueia_buscar_cargas(client, app, config):
+    usuario_com_a_tool(client, config)
+    _desligar_cargas_ciss(app, config)
+
+    resp = client.get(f"{PREFIXO}/cargas?data_inicial=2026-10-01T00:00:00&data_final=2026-10-14T00:00:00")
+
+    assert resp.status_code == 403
+
+
+def test_mostrar_cargas_ciss_desligada_bloqueia_ver_carga(client, app, config):
+    usuario_com_a_tool(client, config)
+    _desligar_cargas_ciss(app, config)
+
+    resp = client.get(f"{PREFIXO}/cargas/3/22099141")
+
+    assert resp.status_code == 403
+
+
+def test_mostrar_cargas_ciss_desligada_bloqueia_enviar_carga(client, app, config):
+    usuario_com_a_tool(client, config)
+    _desligar_cargas_ciss(app, config)
+
+    resp = client.post(f"{PREFIXO}/cargas/3/22099141/enviar", json={})
+
+    assert resp.status_code == 403
+
+
+def test_mostrar_cargas_ciss_desligada_bloqueia_marcar_integrada(client, app, config):
+    usuario_com_a_tool(client, config)
+    _desligar_cargas_ciss(app, config)
+
+    resp = client.post(f"{PREFIXO}/cargas/3/22099141/marcar-integrada")
+
+    assert resp.status_code == 403
+
+
+def test_mostrar_cargas_ciss_desligada_bloqueia_busca_documento(client, app, config):
+    usuario_com_a_tool(client, config)
+    _desligar_cargas_ciss(app, config)
+
+    resp = client.get(f"{PREFIXO}/cargas/busca-documento?termo=1_22144395")
+
+    assert resp.status_code == 403
+
+
+def test_mostrar_cargas_ciss_desligada_bloqueia_fila(client, app, config):
+    usuario_com_a_tool(client, config)
+    _desligar_cargas_ciss(app, config)
+
+    resp = client.get(f"{PREFIXO}/fila")
+
+    assert resp.status_code == 403
+
+
+def test_mostrar_cargas_ciss_desligada_nao_afeta_pre_cargas(client, app, config):
+    usuario_com_a_tool(client, config)
+    _desligar_cargas_ciss(app, config)
+    app.config["CISS_DB_CLIENT"] = CissClientFalso(pre_cargas=[])
+
+    resp = client.get(
+        f"{PREFIXO}/pre-cargas?data_inicial=2026-10-01T00:00:00&data_final=2026-10-14T00:00:00"
+    )
+
+    assert resp.status_code == 200
+
+
+# --- SOMENTE_PEDIDOS_SOLTOS ligada (padrão) ---------------------------------
+
+
+def _ligar_somente_pedidos_soltos(app, config):
+    app.config["APP_CONFIG"] = dataclasses.replace(config, somente_pedidos_soltos=True)
+
+
+def test_somente_pedidos_soltos_bloqueia_enviar_carga(client, app, config):
+    usuario_com_a_tool(client, config)
+    _ligar_somente_pedidos_soltos(app, config)
+
+    resp = client.post(f"{PREFIXO}/cargas/3/22099141/enviar", json={})
+
+    assert resp.status_code == 403
+
+
+def test_somente_pedidos_soltos_bloqueia_enviar_pre_carga(client, app, config):
+    usuario_com_a_tool(client, config)
+    _ligar_somente_pedidos_soltos(app, config)
+
+    resp = client.post(f"{PREFIXO}/pre-cargas/3/796109/enviar", json={})
+
+    assert resp.status_code == 403
+
+
+def test_somente_pedidos_soltos_nao_afeta_enviar_pre_carga_solta(client, app, config):
+    usuario_com_a_tool(client, config)
+    _ligar_somente_pedidos_soltos(app, config)
+    # Sem CISS configurado: o que importa é não ser 403 (bloqueado pela
+    # flag) — a rota segue até a checagem de CISS normalmente.
+    resp = client.post(f"{PREFIXO}/pre-cargas/3/796109/enviar-solta", json={})
+
+    assert resp.status_code != 403
+    assert resp.status_code == 503
 
 
 # --- /cargas ---------------------------------------------------------------
@@ -1202,6 +1313,44 @@ def test_remover_da_fila_pre_carga_inexistente_devolve_404(client, config):
     resp = client.delete(f"{PREFIXO}/pre-cargas/fila/999")
 
     assert resp.status_code == 404
+
+
+# --- /pre-cargas/envio-automatico -------------------------------------------
+
+
+def test_ver_estado_envio_automatico_sem_sessao_devolve_401(client):
+    resp = client.get(f"{PREFIXO}/pre-cargas/envio-automatico")
+
+    assert resp.status_code == 401
+
+
+def test_ver_estado_envio_automatico_devolve_pausado_e_resumo_multi_pedido(client, config):
+    usuario_com_a_tool(client, config)
+
+    resp = client.get(f"{PREFIXO}/pre-cargas/envio-automatico")
+
+    assert resp.status_code == 200
+    corpo = resp.get_json()
+    assert corpo["pausado"] is False
+    assert corpo["multi_pedido_ignorado"] == {"total": 0, "por_empresa": []}
+
+
+def test_pausar_e_retomar_envio_automatico(client, config):
+    usuario_com_a_tool(client, config)
+
+    resp = client.post(f"{PREFIXO}/pre-cargas/envio-automatico/pausar")
+    assert resp.status_code == 200
+    assert resp.get_json()["pausado"] is True
+
+    resp = client.post(f"{PREFIXO}/pre-cargas/envio-automatico/retomar")
+    assert resp.status_code == 200
+    assert resp.get_json()["pausado"] is False
+
+
+def test_pausar_envio_automatico_sem_sessao_devolve_401(client):
+    resp = client.post(f"{PREFIXO}/pre-cargas/envio-automatico/pausar")
+
+    assert resp.status_code == 401
 
 
 # --- sincronização de cliente via sendClientes (addendum 2026-10-20) -------

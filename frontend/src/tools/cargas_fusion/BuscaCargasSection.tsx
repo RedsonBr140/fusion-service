@@ -34,6 +34,7 @@ import {
 import {
   useBuscarPreCargas,
   useEnviarPreCarga,
+  useEnviarPreCargaSolta,
   usePreCargaPreview,
 } from "@/tools/cargas_fusion/usePreCargasFusion";
 import { MotoristaPickerFusion } from "@/tools/cargas_fusion/MotoristaPickerFusion";
@@ -173,9 +174,23 @@ type Selecionada =
 
 interface Props {
   cargaPreSelecionada: { idEmpresa: number; idPlanilha: number } | null;
+  /** `false` (padrão): carga real (CISS) desligada no backend
+   * (`MOSTRAR_CARGAS_CISS`) — esconde a busca de carga por documento e o
+   * toggle "Mostrar pré-cargas" (sempre `true` nesse caso, sem carga real
+   * pra alternar contra), e nunca busca `/cargas`. */
+  mostrarCargasCiss: boolean;
+  /** `true` (padrão): esconde "Enviar carga ao Fusion" e "Enviar
+   * pré-carga ao Fusion" (empacotam num `cargas[]`/`saveCarga`, e o
+   * backend rejeita com 403 — `SOMENTE_PEDIDOS_SOLTOS`) — só "Enviar
+   * pedido solto" fica disponível. */
+  somentePedidosSoltos: boolean;
 }
 
-export function BuscaCargasSection({ cargaPreSelecionada }: Props) {
+export function BuscaCargasSection({
+  cargaPreSelecionada,
+  mostrarCargasCiss,
+  somentePedidosSoltos,
+}: Props) {
   const [dataInicial, setDataInicial] = useState(hojeAs(7));
   const [dataFinal, setDataFinal] = useState(hojeAs(19));
   const [filtroEmpresaId, setFiltroEmpresaId] = useState<number | null>(null);
@@ -237,6 +252,7 @@ export function BuscaCargasSection({ cargaPreSelecionada }: Props) {
 
   const enviar = useEnviarCarga();
   const enviarPreCarga = useEnviarPreCarga();
+  const enviarPreCargaSolta = useEnviarPreCargaSolta();
   const marcarIntegrada = useMarcarCargaIntegrada();
 
   // Chegou aqui vinda da fila (histórico): abre a prévia direto, sem
@@ -254,8 +270,8 @@ export function BuscaCargasSection({ cargaPreSelecionada }: Props) {
   }, [cargaPreSelecionada]);
 
   const linhas: Linha[] = [
-    ...(busca.data ?? []).map(linhaDeCarga),
-    ...(mostrarPreCargas ? (buscaPreCargas.data ?? []).map(linhaDePreCarga) : []),
+    ...(mostrarCargasCiss ? (busca.data ?? []).map(linhaDeCarga) : []),
+    ...(mostrarPreCargas || !mostrarCargasCiss ? (buscaPreCargas.data ?? []).map(linhaDePreCarga) : []),
   ].sort((a, b) => (b.data ?? "").localeCompare(a.data ?? ""));
 
   const erro =
@@ -292,7 +308,9 @@ export function BuscaCargasSection({ cargaPreSelecionada }: Props) {
     enviar.reset();
     enviarPreCarga.reset();
     marcarIntegrada.reset();
-    busca.mutate({ dataInicial, dataFinal, idEmpresa: filtroEmpresaId, ocultarEnviadas, apenasFusion });
+    if (mostrarCargasCiss) {
+      busca.mutate({ dataInicial, dataFinal, idEmpresa: filtroEmpresaId, ocultarEnviadas, apenasFusion });
+    }
     buscaPreCargas.mutate({
       dataInicial,
       dataFinal,
@@ -385,6 +403,16 @@ export function BuscaCargasSection({ cargaPreSelecionada }: Props) {
     });
   }
 
+  function enviarPreCargaSoltaSelecionada(forcar = false) {
+    if (!selecionada || selecionada.tipo !== "pre-carga") return;
+    enviarPreCargaSolta.mutate({
+      idEmpresa: selecionada.idEmpresa,
+      idPrecarga: selecionada.idPrecarga,
+      itens: itensSelecionados ? Array.from(itensSelecionados) : undefined,
+      forcar,
+    });
+  }
+
   function marcarIntegradaManualmente() {
     if (!selecionada || selecionada.tipo !== "carga") return;
     marcarIntegrada.mutate({ idEmpresa: selecionada.idEmpresa, idPlanilha: selecionada.idPlanilha });
@@ -392,33 +420,35 @@ export function BuscaCargasSection({ cargaPreSelecionada }: Props) {
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex flex-wrap items-end gap-3 rounded-md border border-border p-3">
-        <div className="flex flex-col gap-1">
-          <Label htmlFor="busca-documento">Buscar por código de carga, pedido ou NF</Label>
-          <Input
-            id="busca-documento"
-            value={termoDocumento}
-            onChange={(e) => setTermoDocumento(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && termoDocumento.trim()) {
-                e.preventDefault();
-                buscarPorDocumento();
-              }
-            }}
-            placeholder="1_22144395, 616139 ou 166105-2"
-            className="w-64"
-          />
+      {mostrarCargasCiss && (
+        <div className="flex flex-wrap items-end gap-3 rounded-md border border-border p-3">
+          <div className="flex flex-col gap-1">
+            <Label htmlFor="busca-documento">Buscar por código de carga, pedido ou NF</Label>
+            <Input
+              id="busca-documento"
+              value={termoDocumento}
+              onChange={(e) => setTermoDocumento(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && termoDocumento.trim()) {
+                  e.preventDefault();
+                  buscarPorDocumento();
+                }
+              }}
+              placeholder="1_22144395, 616139 ou 166105-2"
+              className="w-64"
+            />
+          </div>
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={buscarPorDocumento}
+            disabled={!termoDocumento.trim() || buscaDocumento.isPending}
+          >
+            {buscaDocumento.isPending ? <LoaderCircle className="animate-spin" /> : <Search />}
+            Abrir carga
+          </Button>
         </div>
-        <Button
-          type="button"
-          variant="secondary"
-          onClick={buscarPorDocumento}
-          disabled={!termoDocumento.trim() || buscaDocumento.isPending}
-        >
-          {buscaDocumento.isPending ? <LoaderCircle className="animate-spin" /> : <Search />}
-          Abrir carga
-        </Button>
-      </div>
+      )}
 
       <div className="flex flex-wrap items-end gap-3">
         <div className="flex flex-col gap-1">
@@ -475,17 +505,19 @@ export function BuscaCargasSection({ cargaPreSelecionada }: Props) {
             checked={ocultarEnviadas}
             onChange={(e) => setOcultarEnviadas(e.target.checked)}
           />
-          Não mostrar cargas já enviadas
+          Não mostrar {mostrarCargasCiss ? "cargas" : "pré-cargas"} já enviadas
         </label>
-        <label className="flex w-fit items-center gap-2 text-sm text-foreground">
-          <input
-            type="checkbox"
-            className="size-4 accent-primary"
-            checked={mostrarPreCargas}
-            onChange={(e) => setMostrarPreCargas(e.target.checked)}
-          />
-          Mostrar pré-cargas
-        </label>
+        {mostrarCargasCiss && (
+          <label className="flex w-fit items-center gap-2 text-sm text-foreground">
+            <input
+              type="checkbox"
+              className="size-4 accent-primary"
+              checked={mostrarPreCargas}
+              onChange={(e) => setMostrarPreCargas(e.target.checked)}
+            />
+            Mostrar pré-cargas
+          </label>
+        )}
         <label className="flex w-fit items-center gap-2 text-sm text-foreground">
           <input
             type="checkbox"
@@ -518,7 +550,11 @@ export function BuscaCargasSection({ cargaPreSelecionada }: Props) {
         <div className="overflow-x-auto">
           {linhas.length === 0 ? (
             <p className="text-sm text-muted-foreground">
-              {mostrarPreCargas ? "Nenhuma carga ou pré-carga encontrada no período." : "Nenhuma carga encontrada no período."}
+              {!mostrarCargasCiss
+                ? "Nenhuma pré-carga encontrada no período."
+                : mostrarPreCargas
+                  ? "Nenhuma carga ou pré-carga encontrada no período."
+                  : "Nenhuma carga encontrada no período."}
             </p>
           ) : (
             <table className="w-full min-w-[32rem] text-sm">
@@ -655,23 +691,34 @@ export function BuscaCargasSection({ cargaPreSelecionada }: Props) {
                 </p>
               )}
 
+              {somentePedidosSoltos && (
+                <p className="rounded-md bg-yellow-500/10 px-3 py-2.5 text-sm text-foreground">
+                  Envio empacotado em carga desligado (SOMENTE_PEDIDOS_SOLTOS) — esta carga precisa
+                  ser formada dentro do próprio Fusion. "Marcar como integrada" continua disponível.
+                </p>
+              )}
+
               <div className="flex flex-wrap gap-2">
                 {previewCarga.data.item_fila?.status === "ENVIADA" && !confirmarReenvio ? (
-                  <Button type="button" variant="outline" onClick={() => setConfirmarReenvio(true)}>
-                    Reenviar mesmo assim
-                  </Button>
+                  !somentePedidosSoltos && (
+                    <Button type="button" variant="outline" onClick={() => setConfirmarReenvio(true)}>
+                      Reenviar mesmo assim
+                    </Button>
+                  )
                 ) : (
                   <>
-                    <Button
-                      type="button"
-                      variant={confirmarReenvio ? "destructive" : "default"}
-                      onClick={() => enviarCargaSelecionada(confirmarReenvio)}
-                      disabled={enviar.isPending || faltaSelecao}
-                      title={faltaSelecao ? "Selecione motorista e veículo antes de enviar." : undefined}
-                    >
-                      {enviar.isPending ? <LoaderCircle className="animate-spin" /> : <Send />}
-                      {confirmarReenvio ? "Confirmar reenvio" : "Enviar ao Fusion"}
-                    </Button>
+                    {!somentePedidosSoltos && (
+                      <Button
+                        type="button"
+                        variant={confirmarReenvio ? "destructive" : "default"}
+                        onClick={() => enviarCargaSelecionada(confirmarReenvio)}
+                        disabled={enviar.isPending || faltaSelecao}
+                        title={faltaSelecao ? "Selecione motorista e veículo antes de enviar." : undefined}
+                      >
+                        {enviar.isPending ? <LoaderCircle className="animate-spin" /> : <Send />}
+                        {confirmarReenvio ? "Confirmar reenvio" : "Enviar ao Fusion"}
+                      </Button>
+                    )}
                     {!confirmarReenvio && (
                       <Button
                         type="button"
@@ -691,7 +738,7 @@ export function BuscaCargasSection({ cargaPreSelecionada }: Props) {
                 )}
               </div>
 
-              {enviar.isSuccess && <ResultadoEnvio resultado={enviar.data} />}
+              {!somentePedidosSoltos && enviar.isSuccess && <ResultadoEnvio resultado={enviar.data} />}
               {marcarIntegrada.isSuccess && (
                 <p className="flex items-center gap-2 rounded-md bg-green-500/10 px-3 py-2.5 text-sm text-foreground">
                   <BadgeCheck className="size-4" /> Marcada como integrada — não vai ser reenviada sem
@@ -787,26 +834,57 @@ export function BuscaCargasSection({ cargaPreSelecionada }: Props) {
                 </p>
               )}
 
+              {somentePedidosSoltos && !previewPreCarga.data.permite_envio_solto && (
+                <p className="rounded-md bg-yellow-500/10 px-3 py-2.5 text-sm text-foreground">
+                  Envio empacotado em carga desligado (SOMENTE_PEDIDOS_SOLTOS) e esta pré-carga tem
+                  mais de um pedido — envio solto só funciona pra pré-carga de pedido único.
+                </p>
+              )}
+
               <div className="flex flex-wrap gap-2">
-                {previewPreCarga.data.item_fila?.status === "ENVIADA" && !confirmarReenvio ? (
-                  <Button type="button" variant="outline" onClick={() => setConfirmarReenvio(true)}>
-                    Reenviar mesmo assim
-                  </Button>
-                ) : (
-                  <Button
-                    type="button"
-                    variant={confirmarReenvio ? "destructive" : "default"}
-                    onClick={() => enviarPreCargaSelecionada(confirmarReenvio)}
-                    disabled={enviarPreCarga.isPending || faltaSelecao}
-                    title={faltaSelecao ? "Selecione motorista e veículo antes de enviar." : undefined}
-                  >
-                    {enviarPreCarga.isPending ? <LoaderCircle className="animate-spin" /> : <Send />}
-                    {confirmarReenvio ? "Confirmar reenvio" : "Enviar pré-carga ao Fusion"}
-                  </Button>
-                )}
+                {!somentePedidosSoltos &&
+                  (previewPreCarga.data.item_fila?.status === "ENVIADA" && !confirmarReenvio ? (
+                    <Button type="button" variant="outline" onClick={() => setConfirmarReenvio(true)}>
+                      Reenviar mesmo assim
+                    </Button>
+                  ) : (
+                    <Button
+                      type="button"
+                      variant={confirmarReenvio ? "destructive" : "default"}
+                      onClick={() => enviarPreCargaSelecionada(confirmarReenvio)}
+                      disabled={enviarPreCarga.isPending || faltaSelecao}
+                      title={faltaSelecao ? "Selecione motorista e veículo antes de enviar." : undefined}
+                    >
+                      {enviarPreCarga.isPending ? <LoaderCircle className="animate-spin" /> : <Send />}
+                      {confirmarReenvio ? "Confirmar reenvio" : "Enviar pré-carga ao Fusion"}
+                    </Button>
+                  ))}
+
+                {previewPreCarga.data.permite_envio_solto &&
+                  previewPreCarga.data.item_fila?.status !== "ENVIADA" && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => enviarPreCargaSoltaSelecionada(confirmarReenvio)}
+                      disabled={enviarPreCargaSolta.isPending}
+                      title="Manda só o pedido (sem agrupar numa carga) — fica disponível para agrupamento manual na tela 'Formação de carga' do Fusion."
+                    >
+                      {enviarPreCargaSolta.isPending ? (
+                        <LoaderCircle className="animate-spin" />
+                      ) : (
+                        <Send />
+                      )}
+                      Enviar pedido solto (formação manual no Fusion)
+                    </Button>
+                  )}
               </div>
 
-              {enviarPreCarga.isSuccess && <ResultadoEnvio resultado={enviarPreCarga.data} />}
+              {!somentePedidosSoltos && enviarPreCarga.isSuccess && (
+                <ResultadoEnvio resultado={enviarPreCarga.data} />
+              )}
+              {enviarPreCargaSolta.isSuccess && (
+                <ResultadoEnvio resultado={enviarPreCargaSolta.data} />
+              )}
             </>
             );
           })()}

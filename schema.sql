@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS cargas_fusion_precarga_fila (
     motorista_nome        TEXT,
     veiculo_codigo_erp    TEXT,
     veiculo_descricao     TEXT,
+    modo                  TEXT NOT NULL DEFAULT 'BUNDLE' CHECK (modo IN ('BUNDLE', 'SOLTA')),
     status                TEXT NOT NULL DEFAULT 'PENDENTE' CHECK (status IN ('PENDENTE', 'ENVIADA')),
     motivo                TEXT,
     avisos                TEXT NOT NULL DEFAULT '[]',
@@ -64,4 +65,34 @@ CREATE TABLE IF NOT EXISTS cargas_fusion_precarga_fila (
     created_at            TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at            TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (id_empresa, id_precarga)
+);
+
+-- Linha única (id=1): estado do ciclo automático de envio de pré-carga
+-- solta (cargas_fusion/auto_envio.py). O lock contra os 2 workers do
+-- gunicorn vive no Redis, não aqui — esta tabela é só config/estatística
+-- compartilhada (pausa, última execução), sem disputa de concorrência
+-- real.
+CREATE TABLE IF NOT EXISTS cargas_fusion_auto_envio_estado (
+    id                          INTEGER PRIMARY KEY CHECK (id = 1),
+    pausado                     INTEGER NOT NULL DEFAULT 0,
+    ultima_execucao_em          TEXT,
+    ultima_execucao_duracao_ms  INTEGER,
+    ultima_execucao_candidatas  INTEGER,
+    ultima_execucao_enviadas    INTEGER,
+    ultima_execucao_falhas      INTEGER,
+    updated_at                  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+INSERT OR IGNORE INTO cargas_fusion_auto_envio_estado (id) VALUES (1);
+
+-- Pré-carga com mais de um pedido, vista pelo ciclo automático — nunca
+-- enviada (só pedido único entra no envio automático), mas registrada
+-- pra medir o impacto real e achar qual empresa comete isso mais. Uma
+-- linha por pré-carga, não por tick do scheduler.
+CREATE TABLE IF NOT EXISTS cargas_fusion_precarga_multi_pedido (
+    id_empresa      INTEGER NOT NULL,
+    id_precarga      INTEGER NOT NULL,
+    qtd_pedidos      INTEGER NOT NULL,
+    primeira_vez_em  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    ultima_vez_em    TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id_empresa, id_precarga)
 );
