@@ -1542,6 +1542,60 @@ def buscar_item_fila_pre_carga(conn: sqlite3.Connection, id_empresa: int, id_pre
     return _linha_fila_pre_carga(linha) if linha else None
 
 
+def _metricas_fila(conn: sqlite3.Connection, tabela: str, dias: int) -> dict:
+    """`tabela` é sempre uma das duas constantes passadas por
+    `metricas_envio` (nunca entrada externa) — f-string aqui é só pra
+    reusar a mesma query nas duas filas, não é parâmetro de usuário.
+
+    Dias agrupados no fuso de Brasília (`datetime(..., '-3 hours')`), não
+    UTC puro — mesma correção de fuso que `_sqlite_utc_iso` já faz pra
+    exibição (ver nota de fuso no CLAUDE.md), aqui só pro `GROUP BY`, pra
+    um envio feito às 23h de Brasília não vazar pro dia seguinte."""
+    enviadas_total = conn.execute(
+        f"SELECT COUNT(*) AS n FROM {tabela} WHERE status = 'ENVIADA'"
+    ).fetchone()["n"]
+    pendentes = conn.execute(
+        f"SELECT COUNT(*) AS n FROM {tabela} WHERE status = 'PENDENTE'"
+    ).fetchone()["n"]
+    com_falha = conn.execute(
+        f"SELECT COUNT(*) AS n FROM {tabela} WHERE status = 'PENDENTE' AND tentativas > 0"
+    ).fetchone()["n"]
+    por_dia = conn.execute(
+        f"SELECT date(enviado_em, '-3 hours') AS dia, COUNT(*) AS qtd FROM {tabela} "
+        "WHERE status = 'ENVIADA' AND enviado_em >= datetime('now', ? || ' days') "
+        "GROUP BY dia ORDER BY dia",
+        (f"-{dias}",),
+    ).fetchall()
+    return {
+        "enviadas_total": enviadas_total,
+        "pendentes": pendentes,
+        "com_falha": com_falha,
+        "enviadas_por_dia": [{"dia": linha["dia"], "qtd": linha["qtd"]} for linha in por_dia],
+    }
+
+
+def metricas_envio(conn: sqlite3.Connection, *, dias: int = 14) -> dict:
+    """Métricas de envio ao Fusion pra tela de métricas no frontend.
+
+    `pre_cargas` é a métrica que importa hoje (pedido solto, ver
+    README.md) — ganha o detalhe por `modo` (`SOLTA` é o fluxo corrente,
+    `BUNDLE` é o caminho legado, deveria ficar em zero/perto de zero num
+    deploy com `SOMENTE_PEDIDOS_SOLTOS=true`). `cargas` (carga real
+    empacotada, `cargas_fusion_fila`) é o outro caminho legado — incluído
+    só pra detectar se algo ainda passa por ali; não tem detalhe por
+    modo porque essa tabela não tem a coluna."""
+    pre_cargas = _metricas_fila(conn, "cargas_fusion_precarga_fila", dias)
+    por_modo = conn.execute(
+        "SELECT modo, COUNT(*) AS qtd FROM cargas_fusion_precarga_fila "
+        "WHERE status = 'ENVIADA' GROUP BY modo"
+    ).fetchall()
+    pre_cargas["enviadas_por_modo"] = {linha["modo"]: linha["qtd"] for linha in por_modo}
+    return {
+        "pre_cargas": pre_cargas,
+        "cargas": _metricas_fila(conn, "cargas_fusion_fila", dias),
+    }
+
+
 def pre_cargas_ja_enviadas(conn: sqlite3.Connection) -> set[tuple[int, int]]:
     """`(id_empresa, id_precarga)` de toda pré-carga com `status = 'ENVIADA'`
     — mesmo papel de `cargas_ja_enviadas`, pro filtro "não mostrar pré-carga

@@ -722,6 +722,69 @@ def retomar_envio_automatico():
     return jsonify(auto_envio.obter_estado(get_db())), 200
 
 
+@bp.post("/pre-cargas/envio-automatico/executar-agora")
+@login_required
+def executar_ciclo_agora():
+    """Roda um tick do ciclo automático na hora, fora do intervalo do
+    `BackgroundScheduler` (`AUTO_ENVIO_PRE_CARGA_INTERVALO_SEGUNDOS`) —
+    pra testar/observar sem esperar, ou reagir a um achado do
+    Diagnóstico sem precisar de redeploy. Usa o mesmo `redis_client`
+    (`current_app.config["AUTO_ENVIO_REDIS_CLIENT"]`) e os mesmos
+    clients do `_tick` agendado em `app.py` — o lock é compartilhado de
+    verdade, então clicar durante um tick automático em andamento
+    devolve `{"status": "pulado", ...}`, nunca dispara em dobro."""
+    redis_client = current_app.config.get("AUTO_ENVIO_REDIS_CLIENT")
+    if redis_client is None:
+        return (
+            jsonify({"error": "Ciclo automático desligado neste ambiente (AUTO_ENVIO_PRE_CARGA_ATIVO=false)."}),
+            409,
+        )
+
+    config = current_app.config["APP_CONFIG"]
+    resultado = auto_envio.executar_ciclo(
+        get_db(),
+        redis_client,
+        _ciss_client(),
+        _fusion_client(),
+        _fusion_portal_client(),
+        janela_horas=config.auto_envio_pre_carga_janela_horas,
+        corte=config.auto_envio_pre_carga_corte,
+        discord_webhook_url=config.discord_webhook_url,
+        lock_timeout_segundos=config.auto_envio_pre_carga_intervalo_segundos * 3,
+    )
+    return jsonify(resultado), 200
+
+
+# --- Métricas ------------------------------------------------------------
+
+
+@bp.get("/metricas")
+@login_required
+def ver_metricas():
+    conn = get_db()
+    try:
+        dias = int(request.args.get("dias", 14))
+    except ValueError:
+        dias = 14
+    dias = max(1, min(dias, 90))
+
+    metricas = service.metricas_envio(conn, dias=dias)
+    metricas["multi_pedido"] = auto_envio.resumo_multi_pedido(conn)
+    metricas["multi_pedido"]["por_dia"] = auto_envio.resumo_multi_pedido_por_dia(conn, dias=dias)
+    return jsonify(metricas), 200
+
+
+@bp.get("/pre-cargas/envio-automatico/execucoes")
+@login_required
+def ver_execucoes_envio_automatico():
+    try:
+        limite = int(request.args.get("limite", 50))
+    except ValueError:
+        limite = 50
+    limite = max(1, min(limite, 200))
+    return jsonify({"execucoes": auto_envio.listar_execucoes(get_db(), limite=limite)}), 200
+
+
 # --- Fila de envio -----------------------------------------------------
 
 

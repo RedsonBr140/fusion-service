@@ -1353,6 +1353,36 @@ def test_pausar_envio_automatico_sem_sessao_devolve_401(client):
     assert resp.status_code == 401
 
 
+def test_executar_ciclo_agora_sem_sessao_devolve_401(client):
+    resp = client.post(f"{PREFIXO}/pre-cargas/envio-automatico/executar-agora")
+
+    assert resp.status_code == 401
+
+
+def test_executar_ciclo_agora_devolve_409_quando_ciclo_automatico_desligado(client, config):
+    """`AUTO_ENVIO_PRE_CARGA_ATIVO=false` (default de `config` nos testes
+    daqui) nunca cria `AUTO_ENVIO_REDIS_CLIENT` em `create_app` — sem
+    lock, não tem como rodar o ciclo com segurança contra os workers do
+    gunicorn, então a rota recusa em vez de tentar sem lock."""
+    usuario_com_a_tool(client, config)
+
+    resp = client.post(f"{PREFIXO}/pre-cargas/envio-automatico/executar-agora")
+
+    assert resp.status_code == 409
+
+
+def test_executar_ciclo_agora_roda_o_ciclo_de_verdade_quando_ligado(client, app, config):
+    import fakeredis
+
+    usuario_com_a_tool(client, config)
+    app.config["AUTO_ENVIO_REDIS_CLIENT"] = fakeredis.FakeRedis()
+
+    resp = client.post(f"{PREFIXO}/pre-cargas/envio-automatico/executar-agora")
+
+    assert resp.status_code == 200
+    assert resp.get_json()["status"] == "ciss_nao_configurado"  # `config.ciss_db` é None neste fixture
+
+
 # --- sincronização de cliente via sendClientes (addendum 2026-10-20) -------
 
 

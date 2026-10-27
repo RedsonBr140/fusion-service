@@ -14,12 +14,15 @@ import type {
   CargaResumo,
   EmpresaEstoque,
   EnvioAutomaticoEstado,
+  ExecucaoEnvioAutomatico,
   ItemFilaFusion,
   ItemFilaPreCargaFusion,
+  Metricas,
   MotoristaFusion,
   PreCargaResumo,
   PreviewCargaFusion,
   PreviewPreCargaFusion,
+  ResultadoCicloManual,
   ResultadoEnvioCargaFusion,
   SelecaoEnvioCargaFusion,
   SelecaoEnvioPreCargaFusion,
@@ -292,6 +295,20 @@ export function pausarEnvioAutomatico(): Promise<EnvioAutomaticoEstado> {
 
 export function retomarEnvioAutomatico(): Promise<EnvioAutomaticoEstado> {
   return request("/api/pre-cargas/envio-automatico/retomar", { method: "POST" });
+}
+
+export function executarCicloAgora(): Promise<ResultadoCicloManual> {
+  return request("/api/pre-cargas/envio-automatico/executar-agora", { method: "POST" });
+}
+
+export function getMetricas(dias = 14): Promise<Metricas> {
+  return request(`/api/metricas?dias=${dias}`);
+}
+
+export function getExecucoesEnvioAutomatico(
+  limite = 50
+): Promise<{ execucoes: ExecucaoEnvioAutomatico[] }> {
+  return request(`/api/pre-cargas/envio-automatico/execucoes?limite=${limite}`);
 }
 
 // --- Veículo e motorista: ao vivo no Fusion, sem cadastro local ------------

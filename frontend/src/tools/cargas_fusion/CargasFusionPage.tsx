@@ -5,10 +5,12 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { BuscaCargasSection } from "@/tools/cargas_fusion/BuscaCargasSection";
 import { CadastroPessoaSection } from "@/tools/cargas_fusion/CadastroPessoaSection";
+import { DiagnosticoSection } from "@/tools/cargas_fusion/DiagnosticoSection";
 import { EnvioAutomaticoStatus } from "@/tools/cargas_fusion/EnvioAutomaticoStatus";
 import { FusionServiceLoginForm } from "@/tools/cargas_fusion/FusionServiceLoginForm";
 import { HistoricoPreCargaSection } from "@/tools/cargas_fusion/HistoricoPreCargaSection";
 import { HistoricoSection } from "@/tools/cargas_fusion/HistoricoSection";
+import { MetricasSection } from "@/tools/cargas_fusion/MetricasSection";
 import {
   useAjudantes,
   useAtualizarAjudante,
@@ -19,11 +21,13 @@ import {
 import { useAppConfig } from "@/tools/cargas_fusion/useCargasFusion";
 import { useFusionServiceAuth } from "@/tools/cargas_fusion/useFusionServiceAuth";
 
-type Secao = "busca" | "historico" | "ajudantes";
+type Secao = "busca" | "historico" | "metricas" | "diagnostico" | "ajudantes";
 
 const ABAS: { chave: Secao; rotulo: string }[] = [
   { chave: "busca", rotulo: "Buscar cargas" },
   { chave: "historico", rotulo: "Histórico" },
+  { chave: "metricas", rotulo: "Métricas" },
+  { chave: "diagnostico", rotulo: "Diagnóstico" },
   { chave: "ajudantes", rotulo: "Ajudantes" },
 ];
 
@@ -112,6 +116,8 @@ export function CargasFusionPage() {
                 ) : (
                   <HistoricoPreCargaSection />
                 ))}
+              {secao === "metricas" && <MetricasSection />}
+              {secao === "diagnostico" && <DiagnosticoSection />}
               {secao === "ajudantes" && (
                 <CadastroPessoaSection
                   tipo="ajudante"

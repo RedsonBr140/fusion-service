@@ -230,6 +230,71 @@ export interface EnvioAutomaticoEstado {
   };
 }
 
+/** Um ponto por dia (fuso de Brasília), pra gráfico/tabela simples. */
+export interface PontoPorDia {
+  dia: string;
+  qtd: number;
+}
+
+interface MetricasFila {
+  enviadas_total: number;
+  pendentes: number;
+  com_falha: number;
+  enviadas_por_dia: PontoPorDia[];
+}
+
+/** `GET /api/metricas` — `pre_cargas` é o fluxo corrente (pedido solto,
+ * ver README.md); `cargas` é o caminho legado de carga empacotada
+ * (`cargas_fusion_fila`), incluído só pra detectar se algo ainda passa
+ * por ali. `multi_pedido` não é um problema a corrigir — é exclusão
+ * permanente de escopo (uma entrega solta não agrupa mais de um pedido),
+ * só contada pra medir volume. */
+export interface Metricas {
+  pre_cargas: MetricasFila & { enviadas_por_modo: Partial<Record<"BUNDLE" | "SOLTA", number>> };
+  cargas: MetricasFila;
+  multi_pedido: {
+    total: number;
+    por_empresa: { id_empresa: number; qtd: number }[];
+    por_dia: PontoPorDia[];
+  };
+}
+
+/** `POST /pre-cargas/envio-automatico/executar-agora` — mesmos status que
+ * `executar_ciclo` já devolvia pro tick agendado (`auto_envio.py`):
+ * `"pausado"`, `"ciss_nao_configurado"`, `"antes_do_corte"`, `"pulado"`
+ * (lock já em uso por um tick automático concorrente) ou `"executado"`
+ * (com `candidatas`/`enviadas`/`falhas`/`duracao_ms`). Campos opcionais
+ * porque o shape muda com o `status`. */
+export interface ResultadoCicloManual {
+  status: string;
+  motivo?: string;
+  candidatas?: number;
+  enviadas?: number;
+  falhas?: number;
+  duracao_ms?: number;
+}
+
+/** Uma execução do ciclo automático (`GET
+ * /api/pre-cargas/envio-automatico/execucoes`) — `breakdown` soma a
+ * duração de cada método de client (`"ciss.get_itens_pre_carga"` etc.)
+ * chamado durante o ciclo inteiro; `itens_lentos` são as pré-cargas mais
+ * lentas daquele ciclo, cada uma com o método que dominou o tempo dela. */
+export interface ExecucaoEnvioAutomatico {
+  executado_em: string;
+  duracao_ms: number;
+  candidatas: number;
+  enviadas: number;
+  falhas: number;
+  breakdown: Record<string, { duracao_ms: number; chamadas: number }>;
+  itens_lentos: {
+    id_empresa: number;
+    id_precarga: number;
+    duracao_ms: number;
+    metodo_dominante: string | null;
+    duracao_dominante_ms: number;
+  }[];
+}
+
 /** Lido ao vivo do portal do Fusion (fusion-py), não de cadastro local —
  * sem `id` nem `ativo`; `codigo_erp` é o identificador. Sem
  * `peso_max_entregas`/`volume_max_entregas`/`qtd_pallets_veiculo`: a grade

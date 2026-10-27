@@ -481,6 +481,21 @@ mesma contagem (`_agrupar_itens_por_pedido`) pro endpoint decidir
 `permite_envio_solto` no preview, e o frontend só mostra o botão
 ("Enviar pedido solto") quando isso é `true`.
 
+**Multi-pedido não é uma lacuna — é permanente enquanto o escopo for
+pedido solto.** Não existe versão futura de `montar_payload_pre_carga_solta`
+que resolva isso: uma entrega solta é um `saveEntregaServico` sem
+`saveCarga`, e não há onde amarrar mais de um pedido numa chamada dessas
+sem reintroduzir o objeto de agrupamento (carga empacotada) que este modo
+existe pra evitar. Suportar multi-pedido de verdade significaria voltar
+ao caminho legado (`montar_payload_pre_carga`/`saveCarga` empacotado,
+`MOSTRAR_CARGAS_CISS`/`SOMENTE_PEDIDOS_SOLTOS`, ver README.md), não uma
+evolução deste. Por isso o ciclo automático (`auto_envio.py`) não tenta
+nada além de registrar/notificar — `_registrar_multi_pedido` grava em
+`cargas_fusion_precarga_multi_pedido` (uma linha por pré-carga, upsert por
+`(id_empresa, id_precarga)`, não por tick) e `resumo_multi_pedido` conta
+isso pro Discord/tela de métricas (`GET /api/metricas`). É um contador de
+quanto o negócio bate nesse limite, não um backlog de bug a fechar.
+
 Os dois modos coexistem na mesma linha de fila
 (`cargas_fusion_precarga_fila`, chave `(id_empresa, id_precarga)`) — uma
 coluna nova, `modo` (`'BUNDLE'`/`'SOLTA'`), distingue qual foi usado.

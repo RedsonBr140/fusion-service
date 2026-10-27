@@ -96,3 +96,22 @@ CREATE TABLE IF NOT EXISTS cargas_fusion_precarga_multi_pedido (
     ultima_vez_em    TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id_empresa, id_precarga)
 );
+
+-- Histórico de execuções do ciclo automático, pra diagnóstico de
+-- desempenho ("qual etapa demorou mais, por quê") — uma linha por
+-- ciclo, podada pra manter só as últimas 200 (ver
+-- `auto_envio._podar_execucoes`). `breakdown` é JSON
+-- `{"<cliente>.<metodo>": {"duracao_ms": N, "chamadas": N}}`, somado por
+-- método de cliente (CISS/Fusion/portal) ao longo do ciclo inteiro.
+-- `itens_lentos` é JSON, lista das pré-cargas mais lentas do ciclo (até
+-- 10), cada uma com o método que dominou o tempo dela.
+CREATE TABLE IF NOT EXISTS cargas_fusion_auto_envio_execucoes (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    executado_em   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    duracao_ms     INTEGER NOT NULL,
+    candidatas     INTEGER NOT NULL,
+    enviadas       INTEGER NOT NULL,
+    falhas         INTEGER NOT NULL,
+    breakdown      TEXT NOT NULL DEFAULT '{}',
+    itens_lentos   TEXT NOT NULL DEFAULT '[]'
+);

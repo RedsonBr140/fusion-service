@@ -24,6 +24,7 @@ lock em si.
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 import time
@@ -43,6 +44,58 @@ NOME_LOCK = "fusion-service:auto-envio-pre-carga"
 # Teto de segurança pra get_pre_cargas — alto o bastante pra nunca
 # truncar uma janela de verdade, mas finito.
 _LIMITE_PRE_CARGAS_POR_CICLO = 1000
+
+# Quantas pré-cargas mais lentas guardar por ciclo, pra responder "por
+# quê" sem guardar uma linha por item processado (ilimitado, cresceria
+# sem controle) — top N já mostra se é sempre a mesma empresa/padrão.
+_TOP_N_ITENS_LENTOS = 10
+
+# Quantos ciclos manter em `cargas_fusion_auto_envio_execucoes` — poda a
+# cada INSERT (ver `_podar_execucoes`), não um job separado.
+_RETENCAO_EXECUCOES = 200
+
+
+class _ClienteCronometrado:
+    """Proxy transparente em volta de um client (CISS/Fusion/portal) que
+    cronometra toda chamada de método e acumula em `chamadas` (lista
+    compartilhada entre os três clients do ciclo) — método, não o quê a
+    chamada fez, por isso não precisa tocar em `service.py` nenhuma vez:
+    `get_itens_pre_carga` chamado duas vezes por pré-carga (uma em
+    `executar_ciclo`, outra dentro de `preparar_envio_pre_carga_solta`)
+    aparece como dois registros iguais, exatamente a duplicação real.
+
+    `prefixo` rotula o método (`"ciss.get_itens_pre_carga"`) pra não
+    confundir métodos de nomes iguais em clients diferentes (não há caso
+    hoje, mas não custa)."""
+
+    def __init__(self, cliente, chamadas: list[dict], prefixo: str) -> None:
+        self._cliente = cliente
+        self._chamadas = chamadas
+        self._prefixo = prefixo
+
+    def __getattr__(self, nome: str):
+        atributo = getattr(self._cliente, nome)
+        if not callable(atributo):
+            return atributo
+
+        def _cronometrada(*args, **kwargs):
+            inicio = time.monotonic()
+            try:
+                return atributo(*args, **kwargs)
+            finally:
+                duracao_ms = int((time.monotonic() - inicio) * 1000)
+                self._chamadas.append({"metodo": f"{self._prefixo}.{nome}", "duracao_ms": duracao_ms})
+
+        return _cronometrada
+
+
+def _agregar_breakdown(chamadas: list[dict]) -> dict[str, dict]:
+    breakdown: dict[str, dict] = {}
+    for chamada in chamadas:
+        entrada = breakdown.setdefault(chamada["metodo"], {"duracao_ms": 0, "chamadas": 0})
+        entrada["duracao_ms"] += chamada["duracao_ms"]
+        entrada["chamadas"] += 1
+    return breakdown
 
 
 def obter_estado(conn: sqlite3.Connection) -> dict:
@@ -91,6 +144,65 @@ def _registrar_execucao(
         )
 
 
+def _podar_execucoes(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "DELETE FROM cargas_fusion_auto_envio_execucoes WHERE id NOT IN ("
+        "SELECT id FROM cargas_fusion_auto_envio_execucoes ORDER BY id DESC LIMIT ?)",
+        (_RETENCAO_EXECUCOES,),
+    )
+
+
+def _registrar_execucao_detalhada(
+    conn: sqlite3.Connection,
+    *,
+    duracao_ms: int,
+    candidatas: int,
+    enviadas: int,
+    falhas: int,
+    breakdown: dict[str, dict],
+    itens_lentos: list[dict],
+) -> None:
+    """Histórico pra diagnóstico — tabela separada de
+    `cargas_fusion_auto_envio_estado` (que só guarda o último ciclo, sem
+    detalhe de etapa) porque este serviço não tem ORM/migration pra
+    adicionar colunas de histórico numa tabela de linha única; `with
+    conn` cobre o INSERT e a poda na mesma transação."""
+    with conn:
+        conn.execute(
+            "INSERT INTO cargas_fusion_auto_envio_execucoes "
+            "(duracao_ms, candidatas, enviadas, falhas, breakdown, itens_lentos) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                duracao_ms,
+                candidatas,
+                enviadas,
+                falhas,
+                json.dumps(breakdown, ensure_ascii=False),
+                json.dumps(itens_lentos, ensure_ascii=False),
+            ),
+        )
+        _podar_execucoes(conn)
+
+
+def listar_execucoes(conn: sqlite3.Connection, *, limite: int = 50) -> list[dict]:
+    linhas = conn.execute(
+        "SELECT * FROM cargas_fusion_auto_envio_execucoes ORDER BY id DESC LIMIT ?",
+        (limite,),
+    ).fetchall()
+    return [
+        {
+            "executado_em": service._sqlite_utc_iso(linha["executado_em"]),
+            "duracao_ms": linha["duracao_ms"],
+            "candidatas": linha["candidatas"],
+            "enviadas": linha["enviadas"],
+            "falhas": linha["falhas"],
+            "breakdown": json.loads(linha["breakdown"]),
+            "itens_lentos": json.loads(linha["itens_lentos"]),
+        }
+        for linha in reversed(linhas)
+    ]
+
+
 def resumo_multi_pedido(conn: sqlite3.Connection, *, top_n: int = 5) -> dict:
     """`total` de pré-cargas multi-pedido já vistas pelo ciclo (nunca
     enviadas por ele) e as `top_n` empresas que mais cometem isso — pra
@@ -106,6 +218,22 @@ def resumo_multi_pedido(conn: sqlite3.Connection, *, top_n: int = 5) -> dict:
         "total": total,
         "por_empresa": [{"id_empresa": linha["id_empresa"], "qtd": linha["qtd"]} for linha in por_empresa],
     }
+
+
+def resumo_multi_pedido_por_dia(conn: sqlite3.Connection, *, dias: int = 14) -> list[dict]:
+    """Pré-cargas multi-pedido vistas *pela primeira vez* por dia (fuso
+    de Brasília, mesmo motivo de `_metricas_fila` em `service.py`) — não
+    é um bug com tendência a corrigir (ver nota em CLAUDE.md: é exclusão
+    permanente do escopo de pedido solto), é só volume pra acompanhar
+    quanto o negócio bate nesse limite ao longo do tempo."""
+    linhas = conn.execute(
+        "SELECT date(primeira_vez_em, '-3 hours') AS dia, COUNT(*) AS qtd "
+        "FROM cargas_fusion_precarga_multi_pedido "
+        "WHERE primeira_vez_em >= datetime('now', ? || ' days') "
+        "GROUP BY dia ORDER BY dia",
+        (f"-{dias}",),
+    ).fetchall()
+    return [{"dia": linha["dia"], "qtd": linha["qtd"]} for linha in linhas]
 
 
 def _registrar_multi_pedido(conn: sqlite3.Connection, id_empresa: int, id_precarga: int, qtd_pedidos: int) -> bool:
@@ -187,14 +315,30 @@ def executar_ciclo(
     if lock is None:
         return {"status": "pulado", "motivo": "ciclo já em andamento em outro worker"}
 
+    # Proxies cronometrados em volta dos três clients — toda chamada de
+    # método vira um registro em `chamadas` (método + duração), sem
+    # precisar passar nenhum cronômetro pelas funções de `service.py`.
+    # Mesma instância em todo o ciclo, não uma por pré-carga: o que
+    # distingue um item do outro é a posição na lista (`idx_inicio_item`
+    # abaixo), não o proxy em si.
+    chamadas: list[dict] = []
+    ciss = _ClienteCronometrado(ciss_client, chamadas, "ciss")
+    fusion = _ClienteCronometrado(fusion_client, chamadas, "fusion") if fusion_client is not None else None
+    portal = (
+        _ClienteCronometrado(fusion_portal_client, chamadas, "portal")
+        if fusion_portal_client is not None
+        else None
+    )
+
     inicio = time.monotonic()
     candidatas = 0
     enviadas = 0
     falhas = 0
+    itens_lentos: list[dict] = []
     try:
         inicio_janela = max(agora - timedelta(hours=janela_horas), corte)
 
-        pre_cargas = ciss_client.get_pre_cargas(inicio_janela, agora, limite=_LIMITE_PRE_CARGAS_POR_CICLO)
+        pre_cargas = ciss.get_pre_cargas(inicio_janela, agora, limite=_LIMITE_PRE_CARGAS_POR_CICLO)
         ja_enviadas = service.pre_cargas_ja_enviadas(conn)
 
         for pre_carga in pre_cargas:
@@ -203,8 +347,10 @@ def executar_ciclo(
             if (id_empresa, id_precarga) in ja_enviadas:
                 continue
 
+            inicio_item = time.monotonic()
+            idx_inicio_item = len(chamadas)
             try:
-                itens_todos = ciss_client.get_itens_pre_carga(id_precarga)
+                itens_todos = ciss.get_itens_pre_carga(id_precarga)
                 qtd_pedidos = service.contar_pedidos(itens_todos)
 
                 if qtd_pedidos != 1:
@@ -220,7 +366,7 @@ def executar_ciclo(
 
                 candidatas += 1
                 resultado_preparo = service.preparar_envio_pre_carga_solta(
-                    ciss_client, id_empresa, id_precarga
+                    ciss, id_empresa, id_precarga
                 )
                 if resultado_preparo is None:
                     continue
@@ -228,7 +374,7 @@ def executar_ciclo(
 
                 saida = service.processar_envio_pre_carga_solta(
                     conn,
-                    fusion_client,
+                    fusion,
                     id_empresa,
                     id_precarga,
                     service.codigo_pre_carga(id_empresa, id_precarga),
@@ -236,7 +382,7 @@ def executar_ciclo(
                     avisos,
                     avisos_bloqueantes,
                     clientes_por_idclifor=clientes,
-                    fusion_portal_client=fusion_portal_client,
+                    fusion_portal_client=portal,
                 )
 
                 if saida["status"] == "pendente":
@@ -262,9 +408,32 @@ def executar_ciclo(
                     f"Erro inesperado processando pré-carga {id_empresa}/{id_precarga} "
                     "no ciclo automático — ver logs.",
                 )
+            finally:
+                duracao_item_ms = int((time.monotonic() - inicio_item) * 1000)
+                chamadas_item = chamadas[idx_inicio_item:]
+                dominante = max(chamadas_item, key=lambda c: c["duracao_ms"], default=None)
+                itens_lentos.append(
+                    {
+                        "id_empresa": id_empresa,
+                        "id_precarga": id_precarga,
+                        "duracao_ms": duracao_item_ms,
+                        "metodo_dominante": dominante["metodo"] if dominante else None,
+                        "duracao_dominante_ms": dominante["duracao_ms"] if dominante else 0,
+                    }
+                )
 
         duracao_ms = int((time.monotonic() - inicio) * 1000)
         _registrar_execucao(conn, duracao_ms=duracao_ms, candidatas=candidatas, enviadas=enviadas, falhas=falhas)
+        itens_lentos.sort(key=lambda i: i["duracao_ms"], reverse=True)
+        _registrar_execucao_detalhada(
+            conn,
+            duracao_ms=duracao_ms,
+            candidatas=candidatas,
+            enviadas=enviadas,
+            falhas=falhas,
+            breakdown=_agregar_breakdown(chamadas),
+            itens_lentos=itens_lentos[:_TOP_N_ITENS_LENTOS],
+        )
         return {
             "status": "executado",
             "candidatas": candidatas,

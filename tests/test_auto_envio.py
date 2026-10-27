@@ -278,3 +278,76 @@ def test_falha_no_envio_notifica_discord_so_na_primeira_tentativa(conn, redis_cl
         executar(conn, redis_client, client, fusion, None, discord_webhook_url="https://discord.test/x")
 
     assert len(chamadas) == 1
+
+
+# --- diagnóstico (cronometragem do ciclo) -------------------------------
+
+
+def test_execucao_registra_breakdown_por_metodo_de_client(conn, redis_client):
+    """`get_itens_pre_carga` é chamado duas vezes por pré-carga de
+    verdade (uma vez em `executar_ciclo` pra contar pedidos, outra
+    dentro de `preparar_envio_pre_carga_solta`) — o breakdown precisa
+    refletir essa duplicação real, não escondê-la."""
+    itens = [_item(1, 10)]
+    client = CissClientFalso(
+        pre_cargas=[_pre_carga(3, 600)],
+        itens_por_precarga={600: itens},
+        detalhe_por_precarga={(3, 600): _pre_carga(3, 600)},
+        clientes={1: {"CODIGO_CLIENTE": "C1", "RAZAO_CLIENTE": "FULANO"}},
+    )
+    fusion = FusionClienteFalso()
+
+    executar(conn, redis_client, client, fusion, None)
+
+    execucoes = auto_envio.listar_execucoes(conn)
+    assert len(execucoes) == 1
+    breakdown = execucoes[0]["breakdown"]
+    assert breakdown["ciss.get_itens_pre_carga"]["chamadas"] == 2
+    assert breakdown["fusion.save_entrega_servico"]["chamadas"] == 1
+    assert execucoes[0]["candidatas"] == 1
+    assert execucoes[0]["enviadas"] == 1
+
+
+def test_execucao_registra_item_lento_com_metodo_dominante(conn, redis_client):
+    itens = [_item(1, 10)]
+    client = CissClientFalso(
+        pre_cargas=[_pre_carga(3, 600)],
+        itens_por_precarga={600: itens},
+        detalhe_por_precarga={(3, 600): _pre_carga(3, 600)},
+        clientes={1: {"CODIGO_CLIENTE": "C1", "RAZAO_CLIENTE": "FULANO"}},
+    )
+    fusion = FusionClienteFalso()
+
+    executar(conn, redis_client, client, fusion, None)
+
+    [execucao] = auto_envio.listar_execucoes(conn)
+    [item] = execucao["itens_lentos"]
+    assert item["id_empresa"] == 3
+    assert item["id_precarga"] == 600
+    assert item["metodo_dominante"] is not None
+
+
+def test_execucoes_antigas_sao_podadas_alem_da_retencao(conn, redis_client, monkeypatch):
+    monkeypatch.setattr(auto_envio, "_RETENCAO_EXECUCOES", 3)
+    client = CissClientFalso(pre_cargas=[])
+
+    for _ in range(5):
+        executar(conn, redis_client, client, None, None)
+
+    assert len(auto_envio.listar_execucoes(conn, limite=100)) == 3
+
+
+def test_listar_execucoes_ordena_mais_recente_por_ultimo(conn, redis_client):
+    client_vazio = CissClientFalso(pre_cargas=[])
+    executar(conn, redis_client, client_vazio, None, None)
+    client_com_candidata = CissClientFalso(
+        pre_cargas=[_pre_carga(3, 600)],
+        itens_por_precarga={600: [_item(1, 10)]},
+        detalhe_por_precarga={(3, 600): _pre_carga(3, 600)},
+        clientes={1: {"CODIGO_CLIENTE": "C1"}},
+    )
+    executar(conn, redis_client, client_com_candidata, FusionClienteFalso(), None)
+
+    execucoes = auto_envio.listar_execucoes(conn)
+
+    assert [e["candidatas"] for e in execucoes] == [0, 1]

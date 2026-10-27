@@ -3,8 +3,11 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   enviarPreCargaFusion,
   enviarPreCargaFusionSolta,
+  executarCicloAgora,
   getEnvioAutomaticoEstado,
+  getExecucoesEnvioAutomatico,
   getFilaPreCargasFusion,
+  getMetricas,
   getPreCargaFusionPreview,
   getPreCargasFusion,
   pausarEnvioAutomatico,
@@ -158,4 +161,35 @@ export function usePausarEnvioAutomatico() {
 
 export function useRetomarEnvioAutomatico() {
   return useAtualizarEnvioAutomatico(retomarEnvioAutomatico);
+}
+
+/** Dispara um tick fora do intervalo do scheduler — invalida estado,
+ * métricas e histórico de execuções juntos, porque um ciclo manual
+ * pode mudar os três (enviadas, multi-pedido ignorado, nova linha no
+ * diagnóstico). */
+export function useExecutarCicloAgora() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: executarCicloAgora,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["cargas-fusion", "envio-automatico"] });
+      queryClient.invalidateQueries({ queryKey: ["cargas-fusion", "envio-automatico-execucoes"] });
+      queryClient.invalidateQueries({ queryKey: ["cargas-fusion", "metricas"] });
+      queryClient.invalidateQueries({ queryKey: ["cargas-fusion", "pre-carga-fila"] });
+    },
+  });
+}
+
+export function useMetricas(dias = 14) {
+  return useQuery({
+    queryKey: ["cargas-fusion", "metricas", dias],
+    queryFn: () => getMetricas(dias),
+  });
+}
+
+export function useExecucoesEnvioAutomatico(limite = 50) {
+  return useQuery({
+    queryKey: ["cargas-fusion", "envio-automatico-execucoes", limite],
+    queryFn: async () => (await getExecucoesEnvioAutomatico(limite)).execucoes,
+  });
 }

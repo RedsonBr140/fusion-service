@@ -31,16 +31,22 @@ FRONTEND_DIST = Path(__file__).resolve().parent / "frontend" / "dist"
 logger = logging.getLogger(__name__)
 
 
-def _agendar_auto_envio_pre_carga(config: Config) -> None:
+def _agendar_auto_envio_pre_carga(
+    config: Config,
+    redis_client,
+    ciss_client: CissClient | None,
+    fusion_client: FusionClient | None,
+    fusion_portal_client: FusionPortalClient | None,
+) -> None:
     """Só roda quando `AUTO_ENVIO_PRE_CARGA_ATIVO=true` (`load_config` já
     garante `redis_url` presente nesse caso). O lock no Redis
     (`cargas_fusion/auto_envio.py`) é o que evita os 2 workers do
     gunicorn disparando o mesmo tick em dobro — nada aqui depende de
-    quantos workers existem."""
-    ciss_client = CissClient(config.ciss_db) if config.ciss_db else None
-    fusion_client = FusionClient(config.fusion) if config.fusion else None
-    fusion_portal_client = FusionPortalClient(config.fusion_portal) if config.fusion_portal else None
-    redis_client = redis.Redis.from_url(config.redis_url)
+    quantos workers existem. Clients e `redis_client` vêm de fora
+    (`create_app`) em vez de criados aqui, pra serem os mesmos usados
+    pelo botão "executar agora" (`POST
+    /api/pre-cargas/envio-automatico/executar-agora`) — os dois
+    disputam o mesmo lock, nunca duas instâncias independentes dele."""
 
     def _tick() -> None:
         conn = database.connect(config.database_path)
@@ -76,6 +82,12 @@ def create_app(config=None) -> Flask:
     app.config["FUSION_PORTAL_CLIENT"] = (
         FusionPortalClient(config.fusion_portal) if config.fusion_portal else None
     )
+    # `None` quando o ciclo automático nunca foi ligado (sem REDIS_URL) —
+    # `AUTO_ENVIO_REDIS_CLIENT is None` é como a rota de "executar agora"
+    # decide se o recurso existe neste ambiente, sem reler `Config`.
+    app.config["AUTO_ENVIO_REDIS_CLIENT"] = (
+        redis.Redis.from_url(config.redis_url) if config.auto_envio_pre_carga_ativo else None
+    )
 
     database.init_app(app)
 
@@ -83,7 +95,13 @@ def create_app(config=None) -> Flask:
     app.register_blueprint(cargas_fusion_bp)
 
     if config.auto_envio_pre_carga_ativo:
-        _agendar_auto_envio_pre_carga(config)
+        _agendar_auto_envio_pre_carga(
+            config,
+            app.config["AUTO_ENVIO_REDIS_CLIENT"],
+            app.config["CISS_DB_CLIENT"],
+            app.config["FUSION_CLIENT"],
+            app.config["FUSION_PORTAL_CLIENT"],
+        )
 
     @app.get("/api/health")
     def health():
