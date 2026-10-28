@@ -674,11 +674,13 @@ def normalizar_dt_saida(valor: str) -> str:
         raise DtSaidaInvalida(f"Data de saída inválida: {valor!r}") from None
 
 
-def codigo_pedido_generico(numero_pedido: int, sufixo: str) -> str:
+def codigo_pedido_generico(numero_pedido: int | str, sufixo: str) -> str:
     """O mesmo cálculo de `codigo_pedido`, generalizado para um sufixo que
     não é necessariamente `id_planilha` — pré-carga ainda não tem um
     (`montar_payload_pre_carga` usa um sufixo próprio, sem colidir com o
-    de nenhuma carga real)."""
+    de nenhuma carga real). `numero_pedido` aceita `str` pro caso de
+    pedido sem orçamento — `_montar_payload` passa `f"PN{id_pedido_origem}"`
+    em vez do `IDORCAMENTO`, que não existe nesse caso."""
     return f"{numero_pedido}_{sufixo}"
 
 
@@ -717,10 +719,14 @@ def _montar_payload(
     Fusion como parte de uma pré-carga — usado só por `montar_payload_carga`
     pra não reenviar o que já foi mandado antes da carga existir.
 
-    Pedido sem `IDORCAMENTO` (sem orçamento vinculado no CISS) não entra
-    no envio — nem em `entrega[]`/`entregas_carga` do `saveCarga`, nem em
-    `saveEntregaServico` — só gera aviso não bloqueante; o resto da carga
-    segue normalmente (D11 revisado).
+    Pedido sem `IDORCAMENTO` (sem orçamento vinculado no CISS — ex.
+    transferência entre filiais emitida direto como NF) ainda entra no
+    envio, só identificado pela pré-nota (`id_pedido_origem`, prefixo
+    `"PN"`) em vez do pedido real — gera aviso não bloqueante, informativo
+    (D11 revisado de novo: inicialmente a entrega era descartada por
+    completo quando faltava orçamento; a pedido do Redson, passou a ser
+    enviada mesmo assim, já que a pré-nota sozinha já identifica a
+    entrega de forma estável no Fusion).
 
     `saveEntregaServico` precisa rodar antes do `saveCarga` que referencia
     esses pedidos (spec §5/§7.3) — `processar_envio` decide essa ordem, não
@@ -773,17 +779,20 @@ def _montar_payload(
         primeiro = itens_do_pedido[0]
 
         # IDORCAMENTO é o número de pedido real (ver get_itens_carga).
-        # Sem ele não há pedido_erp estável pro Fusion — o pedido fica de
-        # fora do envio (não entra mais como pré-nota, D11 revisado:
-        # pedido sem orçamento vinculado não deve aparecer pro Fusion).
+        # Sem ele (transferência entre filiais emitida direto como NF, por
+        # exemplo — sem venda/orçamento por trás, ver CLAUDE.md) não há
+        # como usar o pedido real como pedido_erp, mas a entrega ainda
+        # vai pro Fusion — identificada pela pré-nota (IDPLANILHADOCORI,
+        # `id_pedido_origem`, sempre presente) em vez do pedido. Prefixo
+        # "PN" nunca colide com um IDORCAMENTO real (sempre inteiro puro).
         numero_pedido = primeiro.get("IDORCAMENTO")
         if numero_pedido is None:
+            numero_pedido = f"PN{id_pedido_origem}"
             _aviso(
-                f"Pedido (orçamento) do item {id_pedido_origem} não encontrado no CISS — "
-                "entrega não enviada ao Fusion.",
+                f"Pedido (pré-nota) {id_pedido_origem} sem orçamento vinculado no CISS — "
+                "enviado ao Fusion identificado pela pré-nota, não pelo pedido.",
                 bloqueante=False,
             )
-            continue
 
         seq += 1
         id_clifor = primeiro.get("IDCLIFORENTREGA") or primeiro.get("IDCLIFOR")
@@ -1107,11 +1116,14 @@ def montar_payload_pre_carga_solta(
 
     numero_pedido = primeiro.get("IDORCAMENTO")
     if numero_pedido is None:
+        # Mesmo fallback de `_montar_payload`: sem orçamento vinculado no
+        # CISS, identifica a entrega pela pré-nota em vez do pedido real.
+        numero_pedido = f"PN{id_pedido_origem}"
         _aviso(
-            f"Pedido (orçamento) do item {id_pedido_origem} não encontrado no CISS — "
-            "entrega não enviada ao Fusion.",
+            f"Pedido (pré-nota) {id_pedido_origem} sem orçamento vinculado no CISS — "
+            "enviado ao Fusion identificado pela pré-nota, não pelo pedido.",
+            bloqueante=False,
         )
-        return [], avisos, avisos_bloqueantes
 
     id_clifor = primeiro.get("IDCLIFORENTREGA") or primeiro.get("IDCLIFOR")
     cliente_ciss = clientes_por_idclifor.get(id_clifor) if id_clifor else None
@@ -1437,8 +1449,11 @@ def processar_envio(
 
     if not payload_carga.get("entrega"):
         # Nada de novo pra mandar — todo pedido desta carga já foi
-        # resolvido por outro canal (coberto por pré-carga ENVIADA, ou
-        # sem orçamento vinculado). Marca enviada sem chamar o Fusion:
+        # resolvido por outro canal (coberto por pré-carga ENVIADA) ou a
+        # carga genuinamente não tinha nenhum item a enviar (sem orçamento
+        # já não é motivo pra isso desde que passou a ser enviado também,
+        # identificado pela pré-nota — ver `_montar_payload`). Marca
+        # enviada sem chamar o Fusion:
         # chamar saveCarga com entrega[] vazio seria rejeitado de todo
         # jeito ("O Array de Dados do saveCarga tem que ser um array").
         fila = _marcar_enviada_na_fila(conn, id_empresa, id_planilha)

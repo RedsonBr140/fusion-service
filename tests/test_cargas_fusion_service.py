@@ -493,27 +493,28 @@ def test_montar_payload_carga_sem_observacao_do_orcamento_envia_obs_vazio():
     assert entregas_servico[0]["obs"] == ""
 
 
-def test_montar_payload_carga_ignora_pedido_sem_orcamento_vinculado():
-    """Quando get_itens_carga não resolveu IDORCAMENTO (carga sem origem em
-    orçamento, ou NF/pedido ainda não gerados), a entrega não entra no
-    envio — nem em saveCarga, nem em saveEntregaServico — só o aviso."""
+def test_montar_payload_carga_envia_pedido_sem_orcamento_identificado_pela_pre_nota():
+    """Quando get_itens_carga não resolveu IDORCAMENTO (transferência entre
+    filiais emitida direto como NF, p.ex.), a entrega ainda entra no envio
+    — só identificada pela pré-nota (IDPLANILHADOCORI, prefixo "PN") em vez
+    do pedido real. Aviso informativo, nunca bloqueante."""
     item_sem_orcamento = {**ITEM, "IDORCAMENTO": None}
     payload_carga, entregas_servico, avisos, avisos_bloqueantes = service.montar_payload_carga(
         DETALHE, [item_sem_orcamento], {26623: CLIENTE}, MOTORISTA, VEICULO
     )
 
-    assert payload_carga["entrega"] == []
-    assert entregas_servico == []
-    assert any("Pedido (orçamento)" in a for a in avisos)
+    assert len(payload_carga["entrega"]) == 1
+    assert len(entregas_servico) == 1
+    assert payload_carga["entrega"][0]["pedido_erp"] == "PN22083047_22099141"
+    assert any("Pedido (pré-nota)" in a for a in avisos)
     # Não bloqueante (D11): sem orçamento vinculado não é um erro que
-    # devesse travar o resto da carga — aqui não há resto, mas o aviso
-    # não deve aparecer entre os bloqueantes mesmo assim.
+    # devesse travar a carga.
     assert avisos_bloqueantes == []
 
 
-def test_montar_payload_carga_envia_pedidos_com_orcamento_ignorando_os_sem():
-    """Uma carga com pedidos mistos (com e sem orçamento) envia só os que
-    têm IDORCAMENTO — a seq_entrega não pula número por causa do ignorado."""
+def test_montar_payload_carga_envia_pedidos_com_e_sem_orcamento():
+    """Uma carga com pedidos mistos (com e sem orçamento) envia os dois —
+    cada um com seu próprio pedido_erp, sem colidir."""
     item_sem_orcamento = {
         **ITEM, "IDORCAMENTO": None, "IDPLANILHADOCORI": 999999, "NUMSEQUENCIA": 99,
     }
@@ -521,11 +522,13 @@ def test_montar_payload_carga_envia_pedidos_com_orcamento_ignorando_os_sem():
         DETALHE, [item_sem_orcamento, ITEM], {26623: CLIENTE}, MOTORISTA, VEICULO
     )
 
-    assert len(payload_carga["entrega"]) == 1
-    assert len(entregas_servico) == 1
-    assert payload_carga["entrega"][0]["pedido_erp"] == "612442_22099141"
-    assert payload_carga["cargas"][0]["entregas_carga"][0]["seq_entrega"] == "1"
-    assert any("Pedido (orçamento)" in a for a in avisos)
+    assert len(payload_carga["entrega"]) == 2
+    assert len(entregas_servico) == 2
+    pedidos_erp = {e["pedido_erp"] for e in payload_carga["entrega"]}
+    assert pedidos_erp == {"612442_22099141", "PN999999_22099141"}
+    seqs = {e["seq_entrega"] for e in payload_carga["cargas"][0]["entregas_carga"]}
+    assert seqs == {"1", "2"}
+    assert any("Pedido (pré-nota)" in a for a in avisos)
 
 
 def test_montar_payload_carga_agrupa_itens_do_mesmo_pedido_numa_so_entrega():

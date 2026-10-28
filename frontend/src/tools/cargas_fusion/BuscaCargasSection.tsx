@@ -928,8 +928,12 @@ interface PedidoAgrupado {
   /** Chave de agrupamento — a pré-nota (IDPLANILHADOCORI), sempre presente.
    * Não é o número exibido: ver numeroPedido. */
   idPlanilhaDocOri: number;
-  /** O pedido real (IDORCAMENTO). */
-  numeroPedido: number;
+  /** O pedido real (IDORCAMENTO). `null` quando o grupo não tem orçamento
+   * vinculado no CISS — transferência entre filiais emitida direto como
+   * NF, por exemplo (ver CLAUDE.md). O backend ainda envia esse grupo ao
+   * Fusion nesse caso, identificado pela pré-nota em vez do pedido real
+   * (`codigo_pedido_generico` com `f"PN{idPlanilhaDocOri}"`). */
+  numeroPedido: number | null;
   nf: string | null;
   /** CLIENTE_FORNECEDOR.NOME de quem é este pedido — mesmo em toda linha
    * do pedido, pega da primeira. */
@@ -958,15 +962,17 @@ function agruparPorPedido(itens: ItemComPedido[]): PedidoAgrupado[] {
   // tela agrupa por pedido, não por linha. O agrupamento usa IDPLANILHADOCORI
   // (a pré-nota, sempre presente) como chave — o mesmo que o backend faz.
   //
-  // Pedido sem IDORCAMENTO (sem orçamento vinculado no CISS) não aparece
-  // aqui — o backend também o ignora ao montar o envio (D11 revisado).
+  // Pedido sem IDORCAMENTO (sem orçamento vinculado no CISS — ex. uma
+  // transferência entre filiais emitida direto como NF, sem venda por
+  // trás) ainda aparece aqui e ainda vai pro Fusion — o backend
+  // (`_montar_payload`) identifica esse grupo pela pré-nota em vez do
+  // pedido real (D11 revisado de novo).
   //
   // Pré-carga não tem NUMNOTA/SERIENOTA (a NF só nasce quando a carga é
   // formada) — `"NUMNOTA" in l` cobre os dois tipos sem precisar de um
   // branch por `tipo`.
   const grupos = new Map<number, ItemComPedido[]>();
   for (const item of itens) {
-    if (item.IDORCAMENTO == null) continue;
     const grupo = grupos.get(item.IDPLANILHADOCORI);
     if (grupo) grupo.push(item);
     else grupos.set(item.IDPLANILHADOCORI, [item]);
@@ -975,9 +981,10 @@ function agruparPorPedido(itens: ItemComPedido[]): PedidoAgrupado[] {
     const primeiroComNota = linhas.find(
       (l): l is ItemCargaFusion => "NUMNOTA" in l && l.NUMNOTA != null
     );
+    const numeroPedido = linhas[0].IDORCAMENTO;
     return {
       idPlanilhaDocOri,
-      numeroPedido: linhas[0].IDORCAMENTO as number,
+      numeroPedido,
       nf: primeiroComNota ? `${primeiroComNota.NUMNOTA}-${primeiroComNota.SERIENOTA ?? "?"}` : null,
       nomeCliente: linhas[0].NOME_CLIENTE,
       numeros: linhas.map((l) => l.NUMSEQUENCIA),
@@ -1059,11 +1066,21 @@ function PedidosParaEnvio({
                 >
                   <div className="min-w-0">
                     <p className="truncate text-sm font-medium text-foreground">
-                      Pedido {pedido.numeroPedido}
+                      {pedido.numeroPedido != null
+                        ? `Pedido ${pedido.numeroPedido}`
+                        : `Pré-nota ${pedido.idPlanilhaDocOri}`}
                       <span className="font-normal text-muted-foreground">
                         {" "}
                         · NF {pedido.nf ?? (tipo === "pre-carga" ? "ainda não emitida" : "—")}
                       </span>
+                      {pedido.numeroPedido == null && (
+                        <span
+                          className="ml-1.5 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400"
+                          title="Sem orçamento vinculado no CISS — enviado ao Fusion identificado pela pré-nota, não pelo pedido."
+                        >
+                          sem orçamento
+                        </span>
+                      )}
                     </p>
                     <p className="truncate text-xs text-muted-foreground">
                       {pedido.nomeCliente ?? "Cliente não identificado"}
