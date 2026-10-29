@@ -1543,6 +1543,35 @@ def listar_fila_pre_cargas(conn: sqlite3.Connection, *, apenas_pendentes: bool =
     return [_linha_fila_pre_carga(linha) for linha in conn.execute(sql)]
 
 
+def enriquecer_fila_pre_carga_com_consolidacao(ciss_client, fila: list[dict]) -> list[dict]:
+    """Acrescenta `consolidacoes_ciss` a cada item da fila — quando (e em
+    qual carga real) o CISS já incorporou os itens desta pré-carga
+    (`CissClient.get_consolidacoes_pre_carga`, via
+    `PRE_CARGA_PROD.IDPLANILHARETIRADA`). `[]` enquanto o CISS ainda não
+    consolidou nada, nunca ausente — o frontend decide como mostrar
+    "ainda não" vs. "virou a carga X em Y" sem precisar checar `in`.
+
+    Sem `ciss_client` (ambiente sem CISS configurado, ou indisponível
+    agora), devolve a fila sem a informação — isto é sempre um extra
+    informativo sobre o histórico que já existe no sqlite, nunca motivo
+    pra falhar a listagem inteira."""
+    if ciss_client is None or not fila:
+        for linha in fila:
+            linha["consolidacoes_ciss"] = []
+        return fila
+
+    ids_precarga = [linha["id_precarga"] for linha in fila]
+    try:
+        consolidacoes = ciss_client.get_consolidacoes_pre_carga(ids_precarga)
+    except Exception:
+        logger.warning("Falha ao consultar consolidação de pré-carga no CISS", exc_info=True)
+        consolidacoes = {}
+
+    for linha in fila:
+        linha["consolidacoes_ciss"] = consolidacoes.get(linha["id_precarga"], [])
+    return fila
+
+
 def remover_da_fila_pre_carga(conn: sqlite3.Connection, id_: int) -> bool:
     with conn:
         cursor = conn.execute("DELETE FROM cargas_fusion_precarga_fila WHERE id = ?", (id_,))

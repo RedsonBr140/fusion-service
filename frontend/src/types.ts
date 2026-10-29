@@ -211,6 +211,12 @@ export interface ItemFilaPreCargaFusion {
   avisos: string[];
   tentativas: number;
   enviado_em: string | null;
+  /** Quando (e em qual carga real) o CISS já incorporou os itens desta
+   * pré-carga (`PRE_CARGA_PROD.IDPLANILHARETIRADA`) — independente do
+   * envio ao Fusion acima, é um fato só do CISS. Normalmente 0 ou 1
+   * item; lista pra nunca escondar uma consolidação dividida entre
+   * mais de uma carga real, se acontecer. */
+  consolidacoes_ciss: { id_empresa: number; id_planilha: number; consolidada_em: string }[];
 }
 
 /** Estado do ciclo automático de envio de pré-carga solta

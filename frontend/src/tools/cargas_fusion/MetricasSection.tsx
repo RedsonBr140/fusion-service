@@ -111,12 +111,31 @@ export function MetricasSection() {
           </p>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <StatTile rotulo="Total já visto" valor={multi_pedido.total} />
-            {multi_pedido.por_empresa.slice(0, 3).map((e) => (
-              <StatTile key={e.id_empresa} rotulo={`Empresa ${e.id_empresa}`} valor={e.qtd} />
-            ))}
-          </div>
+          <StatTile rotulo="Total já visto" valor={multi_pedido.total} />
+
+          {multi_pedido.por_empresa.length > 0 && (
+            <div>
+              <p className="mb-1 text-xs text-muted-foreground">Por empresa, da que mais pra que menos</p>
+              <ul className="flex flex-col gap-1">
+                {multi_pedido.por_empresa.map((e) => {
+                  const max = multi_pedido.por_empresa[0].qtd;
+                  return (
+                    <li key={e.id_empresa} className="flex items-center gap-3 text-sm">
+                      <span className="w-20 shrink-0 text-muted-foreground">Empresa {e.id_empresa}</span>
+                      <div className="h-2 flex-1 overflow-hidden rounded-full bg-muted">
+                        <div
+                          className="h-full rounded-full bg-primary/70"
+                          style={{ width: `${Math.max(4, (e.qtd / max) * 100)}%` }}
+                        />
+                      </div>
+                      <span className="w-8 shrink-0 text-right tabular-nums">{e.qtd}</span>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
+
           {multi_pedido.total > 0 && (
             <div>
               <p className="mb-1 text-xs text-muted-foreground">Vistas pela 1ª vez por dia (últimos {dias} dias)</p>

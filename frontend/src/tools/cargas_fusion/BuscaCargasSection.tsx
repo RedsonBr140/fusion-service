@@ -97,7 +97,7 @@ function rotuloVeiculo(v: VeiculoFusion): string {
   return v.descricao ? `${v.placa} - ${v.descricao}` : v.placa;
 }
 
-type ItemComPedido = ItemCargaFusion | ItemPreCargaFusion;
+export type ItemComPedido = ItemCargaFusion | ItemPreCargaFusion;
 
 /** L×A×C (cm) e o volume calculado (L) — PRODUTO_GRADE não guarda volume
  * pronto, só as três dimensões. `null` quando o produto não tem nenhuma
@@ -999,17 +999,23 @@ function agruparPorPedido(itens: ItemComPedido[]): PedidoAgrupado[] {
  * tela. Cada pedido é selecionável como unidade (checkbox) e expansível
  * (seta) pra ver os itens de produto que entram no saveEntregaServico.
  * Compartilhado entre carga e pré-carga — só o texto de "sem entregas" e o
- * rótulo de NF sem valor mudam com `tipo`. */
-function PedidosParaEnvio({
+ * rótulo de NF sem valor mudam com `tipo`.
+ *
+ * `somenteLeitura` (usado pelo histórico, pra mostrar os itens de um envio
+ * já feito) esconde os checkboxes e a contagem de seleção — não há nada
+ * pra selecionar quando só se está revendo o que já foi (ou seria) enviado. */
+export function PedidosParaEnvio({
   tipo,
   itens,
   selecionados,
   onAlternarPedido,
+  somenteLeitura = false,
 }: {
   tipo: "carga" | "pre-carga";
   itens: ItemComPedido[];
   selecionados: Set<number> | null;
-  onAlternarPedido: (numerosDoPedido: number[]) => void;
+  onAlternarPedido?: (numerosDoPedido: number[]) => void;
+  somenteLeitura?: boolean;
 }) {
   const [expandidos, setExpandidos] = useState<Set<number>>(new Set());
 
@@ -1037,7 +1043,9 @@ function PedidosParaEnvio({
       <div className="flex items-center gap-2">
         <PackageCheck className="size-4 text-muted-foreground" />
         <Label>
-          Pedidos para o Fusion ({pedidosSelecionados} de {pedidos.length} selecionado(s))
+          {somenteLeitura
+            ? `${pedidos.length} ${pedidos.length === 1 ? "pedido" : "pedidos"}`
+            : `Pedidos para o Fusion (${pedidosSelecionados} de ${pedidos.length} selecionado(s))`}
         </Label>
       </div>
       <div className="flex max-h-96 flex-col gap-2 overflow-auto pr-1">
@@ -1049,16 +1057,18 @@ function PedidosParaEnvio({
               key={pedido.idPlanilhaDocOri}
               className={
                 "overflow-hidden rounded-lg border transition-colors " +
-                (completo ? "border-primary/40 bg-primary/5" : "border-border bg-card")
+                (!somenteLeitura && completo ? "border-primary/40 bg-primary/5" : "border-border bg-card")
               }
             >
               <div className="flex items-center gap-3 px-3 py-2.5">
-                <input
-                  type="checkbox"
-                  className="size-4 shrink-0 accent-primary"
-                  checked={completo}
-                  onChange={() => onAlternarPedido(pedido.numeros)}
-                />
+                {!somenteLeitura && (
+                  <input
+                    type="checkbox"
+                    className="size-4 shrink-0 accent-primary"
+                    checked={completo}
+                    onChange={() => onAlternarPedido?.(pedido.numeros)}
+                  />
+                )}
                 <button
                   type="button"
                   onClick={() => alternarExpandido(pedido.idPlanilhaDocOri)}

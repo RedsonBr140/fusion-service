@@ -27,6 +27,7 @@ FUSION_OBRIGATORIAS = (
     "FUSION_API_URL",
     "FUSION_LOGIN",
     "FUSION_SENHA",
+    "FUSION_EMPRESA_ID",
 )
 
 FUSION_PORTAL_OBRIGATORIAS = (
@@ -73,14 +74,24 @@ class CissDbConfig:
 
 @dataclass(frozen=True, slots=True, repr=False)
 class FusionConfig:
-    """Credenciais do webservice SOAP do Fusion (saveCarga e companhia)."""
+    """Credenciais do webservice SOAP do Fusion (saveCarga e companhia).
+
+    `empresa_id` é o id interno do Fusion pra esta empresa (não o
+    CNPJ) — mesmo campo que o integrador legado em Delphi chama de
+    `ID_EMPRESA` em `Config.ini` (seção `[FUSIONTRAK]`), usado como
+    `empresa_id` no heartbeat `set_dt_ult_int_erp.php`.
+    """
 
     api_url: str
     login: str
     senha: str
+    empresa_id: str
 
     def __repr__(self) -> str:
-        return f"FusionConfig(api_url={self.api_url!r}, login={self.login!r}, senha='***')"
+        return (
+            f"FusionConfig(api_url={self.api_url!r}, login={self.login!r}, "
+            f"senha='***', empresa_id={self.empresa_id!r})"
+        )
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -223,6 +234,7 @@ def _load_fusion(env: Mapping[str, str]) -> FusionConfig | None:
         api_url=valores["FUSION_API_URL"].rstrip("/"),
         login=valores["FUSION_LOGIN"],
         senha=valores["FUSION_SENHA"],
+        empresa_id=valores["FUSION_EMPRESA_ID"],
     )
 
 

@@ -682,10 +682,9 @@ def enviar_pre_carga_solta(id_empresa: int, id_precarga: int):
 @login_required
 def ver_fila_pre_cargas():
     apenas_pendentes = request.args.get("todas") != "1"
-    return (
-        jsonify({"fila": service.listar_fila_pre_cargas(get_db(), apenas_pendentes=apenas_pendentes)}),
-        200,
-    )
+    fila = service.listar_fila_pre_cargas(get_db(), apenas_pendentes=apenas_pendentes)
+    fila = service.enriquecer_fila_pre_carga_com_consolidacao(_ciss_client(), fila)
+    return jsonify({"fila": fila}), 200
 
 
 @bp.delete("/pre-cargas/fila/<int:id_>")

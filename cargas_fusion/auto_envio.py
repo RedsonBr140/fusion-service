@@ -102,7 +102,13 @@ def obter_estado(conn: sqlite3.Connection) -> dict:
     linha = conn.execute("SELECT * FROM cargas_fusion_auto_envio_estado WHERE id = 1").fetchone()
     return {
         "pausado": bool(linha["pausado"]),
-        "ultima_execucao_em": linha["ultima_execucao_em"],
+        # `ultima_execucao_em` vem de `CURRENT_TIMESTAMP` (UTC, string
+        # ingênua) — sem marcar explicitamente, o frontend lia como hora
+        # local e mostrava o ciclo 3h depois do horário de Brasília real
+        # (mesma quirk que `listar_execucoes` já corrige via
+        # `_sqlite_utc_iso`, só que esta rota nunca tinha recebido o
+        # mesmo tratamento).
+        "ultima_execucao_em": service._sqlite_utc_iso(linha["ultima_execucao_em"]),
         "ultima_execucao_duracao_ms": linha["ultima_execucao_duracao_ms"],
         "ultima_execucao_candidatas": linha["ultima_execucao_candidatas"],
         "ultima_execucao_enviadas": linha["ultima_execucao_enviadas"],
@@ -203,16 +209,19 @@ def listar_execucoes(conn: sqlite3.Connection, *, limite: int = 50) -> list[dict
     ]
 
 
-def resumo_multi_pedido(conn: sqlite3.Connection, *, top_n: int = 5) -> dict:
+def resumo_multi_pedido(conn: sqlite3.Connection) -> dict:
     """`total` de pré-cargas multi-pedido já vistas pelo ciclo (nunca
-    enviadas por ele) e as `top_n` empresas que mais cometem isso — pra
-    responder "quantas" e "qual empresa mais" (pedido explícito, não é
-    só um skip silencioso)."""
+    enviadas por ele) e **todas** as empresas que já cometeram isso,
+    ordenadas da que mais pra que menos — pra responder "quantas" e "qual
+    empresa mais" (pedido explícito do Redson, não é só um skip
+    silencioso). Sem `LIMIT`: o número de empresas distintas é sempre
+    pequeno (uma por filial), nunca justificou truncar — uma versão
+    anterior cortava nas 5 primeiras (e o frontend, nas 3 primeiras),
+    escondendo o resto do ranking sem necessidade."""
     total = conn.execute("SELECT COUNT(*) AS n FROM cargas_fusion_precarga_multi_pedido").fetchone()["n"]
     por_empresa = conn.execute(
         "SELECT id_empresa, COUNT(*) AS qtd FROM cargas_fusion_precarga_multi_pedido "
-        "GROUP BY id_empresa ORDER BY qtd DESC LIMIT ?",
-        (top_n,),
+        "GROUP BY id_empresa ORDER BY qtd DESC"
     ).fetchall()
     return {
         "total": total,
@@ -424,6 +433,18 @@ def executar_ciclo(
 
         duracao_ms = int((time.monotonic() - inicio) * 1000)
         _registrar_execucao(conn, duracao_ms=duracao_ms, candidatas=candidatas, enviadas=enviadas, falhas=falhas)
+
+        if fusion is not None:
+            # Checkpoint do ciclo: avisa o Fusion que a integração está
+            # viva e acabou de terminar — `agora` já é hora local de
+            # Brasília (mesma convenção de `corte`/`auto_envio_pre_carga_corte`
+            # neste módulo, não UTC). Nunca propaga falha: um heartbeat
+            # perdido não é motivo pra marcar o ciclo inteiro como falho.
+            try:
+                fusion.avisar_vivo(agora)
+            except Exception:
+                logger.warning("Falha ao avisar heartbeat (set_dt_ult_int_erp) ao Fusion", exc_info=True)
+
         itens_lentos.sort(key=lambda i: i["duracao_ms"], reverse=True)
         _registrar_execucao_detalhada(
             conn,

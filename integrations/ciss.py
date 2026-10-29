@@ -608,6 +608,49 @@ class CissClient:
             (id_precarga,),
         )
 
+    def get_consolidacoes_pre_carga(self, ids_precarga: list[int]) -> dict[int, list[dict[str, object]]]:
+        """Pra cada `IDPRECARGA`, quando (e em qual carga real) o CISS já
+        consolidou os itens dela — o inverso de
+        `get_origem_pre_cargas_da_carga` (que vai de carga pra pré-carga).
+        `PRE_CARGA_PROD.IDPLANILHARETIRADA` começa `NULL` e é preenchido
+        pelo CISS quando a pré-carga é de fato incorporada numa carga
+        (`RETIRADA_PRODUTOS`) — mesmo campo que aquela função já lê, só
+        que aqui é o próprio sinal de consolidação, não um link auxiliar.
+
+        `IDPRECARGA` é globalmente único (sequência única, `CTDPRECARGA`
+        — confirmado contra o gerador do próprio agente CISS), por isso
+        esta consulta não precisa de `IDEMPRESA` da pré-carga pra
+        desambiguar. Uma pré-carga normalmente vira uma única carga, mas
+        a consulta não assume isso — agrupa por pré-carga e devolve uma
+        lista (quase sempre de 1 elemento) pra nunca escondar uma
+        consolidação parcial/dividida se ela existir.
+
+        `{}` pra `ids_precarga` vazio (sem round-trip ao DB2 à toa).
+        """
+        if not ids_precarga:
+            return {}
+        marcadores = ", ".join("?" for _ in ids_precarga)
+        linhas = self._fetch_all(
+            "SELECT PCP.IDPRECARGA, PCP.IDEMPRESAVENDA AS IDEMPRESA, "
+            "PCP.IDPLANILHARETIRADA AS IDPLANILHA, MIN(RP.DTMOVIMENTO) AS DTCONSOLIDACAO "
+            "FROM PRE_CARGA_PROD PCP "
+            "JOIN RETIRADA_PRODUTOS RP ON RP.IDEMPRESA = PCP.IDEMPRESAVENDA "
+            "  AND RP.IDPLANILHA = PCP.IDPLANILHARETIRADA "
+            f"WHERE PCP.IDPRECARGA IN ({marcadores}) AND PCP.IDPLANILHARETIRADA IS NOT NULL "
+            "GROUP BY PCP.IDPRECARGA, PCP.IDEMPRESAVENDA, PCP.IDPLANILHARETIRADA",
+            tuple(ids_precarga),
+        )
+        resultado: dict[int, list[dict[str, object]]] = {}
+        for linha in linhas:
+            resultado.setdefault(linha["IDPRECARGA"], []).append(
+                {
+                    "id_empresa": linha["IDEMPRESA"],
+                    "id_planilha": linha["IDPLANILHA"],
+                    "consolidada_em": linha["DTCONSOLIDACAO"],
+                }
+            )
+        return resultado
+
     def get_origem_pre_cargas_da_carga(self, id_empresa: int, id_planilha: int) -> dict[int, set[int]]:
         """Para cada pedido (`IDPLANILHADOCORI`) desta carga já formada, as
         pré-cargas de onde seus itens vieram — via

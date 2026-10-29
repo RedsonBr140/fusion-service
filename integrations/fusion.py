@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 from xml.etree import ElementTree
 from xml.sax.saxutils import escape
 
@@ -175,6 +177,15 @@ def _chamar(api_url: str, metodo: str, partes: dict[str, str]) -> object:
     return _decodificar_resparam(elemento.text)
 
 
+def _heartbeat_url(api_url: str) -> str:
+    """O heartbeat não é SOAP — é um endpoint legado (webservice v2 do
+    integrador Delphi), `{host-raiz}/php/webservice/set_dt_ult_int_erp.php`,
+    fora do path `/clientws/...` do WSDL. Deriva o host raiz de
+    `FUSION_API_URL` em vez de exigir uma segunda URL de config."""
+    partes = urlsplit(api_url)
+    return f"{partes.scheme}://{partes.netloc}/php/webservice/set_dt_ult_int_erp.php"
+
+
 class FusionClient:
     """Descartável por chamada, como o CissClient: login/senha vão em cada
     requisição, nunca numa sessão compartilhada entre chamadas concorrentes.
@@ -256,3 +267,46 @@ class FusionClient:
 
     def consultar_todos_veiculos(self, filtros: dict | None = None) -> object:
         return self._chamar_array("consultarTodosVeiculos", filtros or {})
+
+    def avisar_vivo(self, ultimo_ciclo: datetime) -> None:
+        """Heartbeat do webservice legado (não o SOAP do WSDL) —
+        `set_dt_ult_int_erp.php`, equivalente ao `Checkpoint` do
+        integrador Delphi original: avisa o Fusion que esta integração
+        está viva e acabou de terminar um ciclo. `ultimo_ciclo` precisa
+        já vir em hora local de Brasília (GMT-3) — mesmo fuso que o
+        integrador legado grava, não UTC.
+
+        O nome exato do parâmetro de data não está confirmado (binário
+        decompilado não resolveu o format string) — manda sob os dois
+        nomes mais plausíveis (`data`, `dt_ult_sinc`); um parâmetro
+        desconhecido não quebra a chamada, mesma tolerância já observada
+        no SOAP (ex.: `obs`/`observacao` em `saveEntregaServico`).
+
+        Usa `empresa_id` (id interno do Fusion), nunca o CNPJ — campo
+        diferente de `login`/`senha` do SOAP, mas mesma credencial de
+        webservice (`senha_ws`).
+        """
+        timestamp = ultimo_ciclo.strftime("%Y-%m-%d %H:%M:%S")
+        dados = {
+            "senha_ws": self._config.senha,
+            "empresa_id": self._config.empresa_id,
+            "data": timestamp,
+            "dt_ult_sinc": timestamp,
+        }
+        url = _heartbeat_url(self._config.api_url)
+
+        logger.info(
+            "Fusion heartbeat set_dt_ult_int_erp empresa_id=%s data=%s",
+            self._config.empresa_id,
+            timestamp,
+        )
+
+        try:
+            resposta = requests.post(url, data=dados, timeout=CALL_TIMEOUT)
+        except requests.RequestException as exc:
+            logger.warning("Fusion inalcançável (%s) chamando heartbeat", type(exc).__name__)
+            raise FusionUnavailable from None
+
+        if resposta.status_code != 200:
+            logger.warning("Fusion respondeu status %s para heartbeat", resposta.status_code)
+            raise FusionUnavailable from None

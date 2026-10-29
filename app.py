@@ -10,6 +10,7 @@ nunca entra em jogo porque o navegador fala com o Vite, não com o Flask.
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 import redis
@@ -29,6 +30,20 @@ from integrations.fusion_portal import FusionPortalClient
 FRONTEND_DIST = Path(__file__).resolve().parent / "frontend" / "dist"
 
 logger = logging.getLogger(__name__)
+
+
+def _configurar_logging() -> None:
+    """Sem isto, todo `logger.info`/`logger.warning` do projeto (ciclo
+    automático, heartbeat do Fusion, chamadas SOAP, ...) ia pro vácuo —
+    o root logger não tem handler nenhum por padrão (nível `WARNING`),
+    e nada aqui chamava `basicConfig`. Só os logs do próprio gunicorn
+    apareciam (ele configura os loggers dele, não o root). `basicConfig`
+    é no-op se o root já tiver um handler, então é seguro chamar isto a
+    cada `create_app()` (testes incluídos) sem duplicar linha."""
+    logging.basicConfig(
+        level=(os.environ.get("LOG_LEVEL") or "INFO").upper(),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
 
 
 def _agendar_auto_envio_pre_carga(
@@ -72,6 +87,7 @@ def _agendar_auto_envio_pre_carga(
 
 
 def create_app(config=None) -> Flask:
+    _configurar_logging()
     app = Flask(__name__)
     config = config or load_config()
     app.config["APP_CONFIG"] = config
