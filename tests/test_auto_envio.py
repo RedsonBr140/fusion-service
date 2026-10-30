@@ -4,7 +4,7 @@ o lock usa `fakeredis` — nenhum teste aqui toca rede ou um Redis de
 verdade.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import fakeredis
 import pytest
@@ -125,15 +125,17 @@ def test_retomar_depois_de_pausar_volta_a_executar(conn, redis_client):
 
 
 def test_antes_do_corte_nunca_tenta_o_lock(conn, redis_client):
-    """Default real de `Config.auto_envio_pre_carga_corte` (2026-10-28
-    08:00) — sem o guard, `max(agora - janela, corte)` viraria `corte`
-    (futuro), e `get_pre_cargas` receberia início > fim: sem erro, só
-    uma janela invertida que nunca bate em nada — mas bateria no CISS a
-    cada tick à toa até o corte passar de verdade. O guard evita isso, e
-    nem chega a tentar o lock (não há nada pra fazer)."""
+    """Sem o guard, `max(agora - janela, corte)` viraria `corte` (futuro),
+    e `get_pre_cargas` receberia início > fim: sem erro, só uma janela
+    invertida que nunca bate em nada — mas bateria no CISS a cada tick à
+    toa até o corte passar de verdade. O guard evita isso, e nem chega a
+    tentar o lock (não há nada pra fazer). `corte` é relativo a `agora`
+    (nunca uma data fixa) pra este teste não virar um time-bomb quando o
+    default real de produção passar."""
     client = CissClientFalso(pre_cargas=[_pre_carga(1, 100)])
 
-    resultado = executar(conn, redis_client, client, None, None, corte=datetime(2026, 10, 28, 8, 0, 0))
+    corte_no_futuro = datetime.now() + timedelta(days=365)
+    resultado = executar(conn, redis_client, client, None, None, corte=corte_no_futuro)
 
     assert resultado == {"status": "antes_do_corte"}
     assert redis_client.get(auto_envio.NOME_LOCK) is None

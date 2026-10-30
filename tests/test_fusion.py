@@ -19,7 +19,9 @@ API_URL = "https://fusion.test/clientws/clientws.php"
 
 
 def _config() -> FusionConfig:
-    return FusionConfig(api_url=API_URL, login="usuario-fusion", senha="senha-fusion")
+    return FusionConfig(
+        api_url=API_URL, login="usuario-fusion", senha="senha-fusion", empresa_id="1"
+    )
 
 
 def _client() -> FusionClient:
