@@ -14,7 +14,7 @@ from functools import wraps
 
 from datetime import datetime
 
-from flask import Blueprint, current_app, jsonify, request
+from flask import Blueprint, current_app, g, jsonify, request
 
 from auth.decorators import login_required
 from cargas_fusion import auto_envio, service
@@ -472,6 +472,75 @@ def marcar_carga_integrada(id_empresa: int, id_planilha: int):
 
     item = service.marcar_integrada_manualmente(get_db(), id_empresa, id_planilha)
     return jsonify({"fila": item}), 200
+
+
+@bp.get("/cargas/<int:id_empresa>/<int:id_planilha>/reenvios")
+@login_required
+@requer_cargas_ciss
+def ver_reenvios_carga(id_empresa: int, id_planilha: int):
+    """Histórico de reenvios avulsos (cross-docking — ver
+    `service.processar_reenvio_pedido_carga`) já feitos pra esta carga,
+    qualquer pedido dela."""
+    reenvios = service.listar_reenvios_pedido(get_db(), id_empresa, id_planilha)
+    return jsonify({"reenvios": reenvios}), 200
+
+
+@bp.post("/cargas/<int:id_empresa>/<int:id_planilha>/pedidos/<int:id_pedido_origem>/reenviar-solta")
+@login_required
+@requer_cargas_ciss
+def reenviar_pedido_carga_solta(id_empresa: int, id_planilha: int, id_pedido_origem: int):
+    """Reenvio manual avulso de um pedido já dentro de uma carga enviada —
+    cross-docking (pedido que chegou neste CD em vez de ir direto pro
+    cliente, sem suporte a isso no CISS/Fusion). Só `saveEntregaServico`,
+    `podeformarcarga: "S"` (ver `service.montar_payload_carga_reenvio_solto`):
+    nunca forma carga nova no CISS, nunca chama `saveCarga` de novo pra
+    não arriscar o upsert (não confirmado) sobre a carga original. Cada
+    chamada é um reenvio novo, com `pedido_erp` próprio — nunca
+    sobrescreve um reenvio anterior nem o envio original da carga. Sem
+    `requer_envio_em_carga`: este modo nunca empacota em `saveCarga`,
+    então não é afetado por `SOMENTE_PEDIDOS_SOLTOS` (mesma lógica de
+    `/pre-cargas/.../enviar-solta`).
+
+    `id_pedido_origem` é `IDPLANILHADOCORI` (a pré-nota, a mesma chave que
+    agrupa pedidos na tela), não `IDORCAMENTO` — identifica o pedido
+    mesmo quando não há orçamento vinculado no CISS."""
+    client = _ciss_client()
+    if client is None:
+        return jsonify({"error": MSG_CISS_NAO_CONFIGURADO}), 503
+
+    corpo = _corpo()
+    usuario = (g.user or {}).get("name") or (g.user or {}).get("ciss_code")
+
+    try:
+        resultado = service.preparar_reenvio_pedido_carga(
+            client,
+            get_db(),
+            id_empresa,
+            id_planilha,
+            id_pedido_origem,
+            usuario,
+            itens_selecionados=_selecao_de_itens(corpo.get("itens")),
+        )
+    except CissDbError:
+        return jsonify({"error": MSG_CISS_INDISPONIVEL}), 503
+
+    if resultado is None:
+        return jsonify({"error": MSG_CARGA_NAO_ENCONTRADA}), 404
+
+    reenvio_id, payload_entregas_servico, avisos, avisos_bloqueantes, clientes = resultado
+
+    saida = service.processar_reenvio_pedido_carga(
+        get_db(),
+        _fusion_client(),
+        id_empresa,
+        reenvio_id,
+        payload_entregas_servico,
+        avisos,
+        avisos_bloqueantes,
+        clientes_por_idclifor=clientes,
+        fusion_portal_client=_fusion_portal_client(),
+    )
+    return jsonify(saida), 200
 
 
 # --- Pré-cargas ----------------------------------------------------------

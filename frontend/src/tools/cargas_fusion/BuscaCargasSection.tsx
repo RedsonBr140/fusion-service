@@ -4,6 +4,7 @@ import {
   ChevronRight,
   LoaderCircle,
   PackageCheck,
+  Redo2,
   Search,
   Send,
   Truck,
@@ -30,6 +31,7 @@ import {
   useEmpresasCargasFusion,
   useEnviarCarga,
   useMarcarCargaIntegrada,
+  useReenviarPedidoCargaSolto,
 } from "@/tools/cargas_fusion/useCargasFusion";
 import {
   useBuscarPreCargas,
@@ -254,6 +256,7 @@ export function BuscaCargasSection({
   const enviarPreCarga = useEnviarPreCarga();
   const enviarPreCargaSolta = useEnviarPreCargaSolta();
   const marcarIntegrada = useMarcarCargaIntegrada();
+  const reenviarPedidoSolto = useReenviarPedidoCargaSolto();
 
   // Chegou aqui vinda da fila (histórico): abre a prévia direto, sem
   // precisar buscar. Histórico só lista cargas, nunca pré-carga.
@@ -283,6 +286,7 @@ export function BuscaCargasSection({
     mensagemDeErro(enviar.error) ??
     mensagemDeErro(enviarPreCarga.error) ??
     mensagemDeErro(marcarIntegrada.error) ??
+    mensagemDeErro(reenviarPedidoSolto.error) ??
     mensagemDeErro(empresas.error);
 
   function buscarPorDocumento() {
@@ -416,6 +420,20 @@ export function BuscaCargasSection({
   function marcarIntegradaManualmente() {
     if (!selecionada || selecionada.tipo !== "carga") return;
     marcarIntegrada.mutate({ idEmpresa: selecionada.idEmpresa, idPlanilha: selecionada.idPlanilha });
+  }
+
+  // Cross-docking: pedido que chegou neste CD em vez de ir direto pro
+  // cliente final, sem suporte a isso no CISS/Fusion — reenvia só os itens
+  // escolhidos deste pedido como uma entrega solta separada (nunca mexe na
+  // carga original nem forma carga nova no CISS). Só existe pra carga real.
+  function reenviarPedidoDaCarga(idPedidoOrigem: number, itensNumSeq: number[]) {
+    if (!selecionada || selecionada.tipo !== "carga") return;
+    reenviarPedidoSolto.mutate({
+      idEmpresa: selecionada.idEmpresa,
+      idPlanilha: selecionada.idPlanilha,
+      idPedidoOrigem,
+      itens: itensNumSeq,
+    });
   }
 
   return (
@@ -680,6 +698,13 @@ export function BuscaCargasSection({
                 itens={previewCarga.data.itens}
                 selecionados={itensSelecionados}
                 onAlternarPedido={(numeros) => alternarPedido(numeros, previewCarga.data.itens)}
+                onReenviarPedido={reenviarPedidoDaCarga}
+                reenviandoPedidoId={
+                  reenviarPedidoSolto.isPending ? reenviarPedidoSolto.variables?.idPedidoOrigem : undefined
+                }
+                ultimoReenvio={
+                  reenviarPedidoSolto.isSuccess ? reenviarPedidoSolto.data : undefined
+                }
               />
 
               {previewCarga.data.item_fila?.status === "ENVIADA" && !confirmarReenvio && (
@@ -1010,14 +1035,59 @@ export function PedidosParaEnvio({
   selecionados,
   onAlternarPedido,
   somenteLeitura = false,
+  onReenviarPedido,
+  reenviandoPedidoId,
+  ultimoReenvio,
 }: {
   tipo: "carga" | "pre-carga";
   itens: ItemComPedido[];
   selecionados: Set<number> | null;
   onAlternarPedido?: (numerosDoPedido: number[]) => void;
   somenteLeitura?: boolean;
+  /** Cross-docking: reenvia só os itens escolhidos de um pedido já dentro
+   * desta carga, como entrega solta separada (nunca mexe no envio
+   * original). Só faz sentido pra `tipo === "carga"`; omitido, a ação de
+   * reenviar nem aparece. */
+  onReenviarPedido?: (idPedidoOrigem: number, itensNumSeq: number[]) => void;
+  /** `idPlanilhaDocOri` do pedido com um reenvio em andamento — desabilita
+   * o botão só daquele pedido, não da tela inteira. */
+  reenviandoPedidoId?: number;
+  /** Resultado do reenvio mais recente (qualquer pedido) — mostrado como
+   * confirmação inline logo abaixo do pedido reenviado. */
+  ultimoReenvio?: { status: string; motivo?: string; reenvio?: { id_pedido_origem: number; pedido_erp: string | null } };
 }) {
   const [expandidos, setExpandidos] = useState<Set<number>>(new Set());
+  // Pedido atualmente em "modo reenvio" (checkboxes de item visíveis) — só
+  // um por vez, pra não espalhar seleção avulsa pela tela inteira.
+  const [pedidoEmReenvio, setPedidoEmReenvio] = useState<number | null>(null);
+  const [itensParaReenvio, setItensParaReenvio] = useState<Set<number>>(new Set());
+
+  function iniciarReenvio(idPedidoOrigem: number) {
+    setPedidoEmReenvio(idPedidoOrigem);
+    setItensParaReenvio(new Set());
+    setExpandidos((atual) => new Set(atual).add(idPedidoOrigem));
+  }
+
+  function cancelarReenvio() {
+    setPedidoEmReenvio(null);
+    setItensParaReenvio(new Set());
+  }
+
+  function alternarItemParaReenvio(numSeq: number) {
+    setItensParaReenvio((atual) => {
+      const novo = new Set(atual);
+      if (novo.has(numSeq)) novo.delete(numSeq);
+      else novo.add(numSeq);
+      return novo;
+    });
+  }
+
+  function confirmarReenvio(idPedidoOrigem: number) {
+    if (itensParaReenvio.size === 0 || !onReenviarPedido) return;
+    onReenviarPedido(idPedidoOrigem, Array.from(itensParaReenvio));
+    setPedidoEmReenvio(null);
+    setItensParaReenvio(new Set());
+  }
 
   if (itens.length === 0) {
     return (
@@ -1056,7 +1126,7 @@ export function PedidosParaEnvio({
             <div
               key={pedido.idPlanilhaDocOri}
               className={
-                "overflow-hidden rounded-lg border transition-colors " +
+                "shrink-0 overflow-hidden rounded-lg border transition-colors " +
                 (!somenteLeitura && completo ? "border-primary/40 bg-primary/5" : "border-border bg-card")
               }
             >
@@ -1113,11 +1183,68 @@ export function PedidosParaEnvio({
                 </button>
               </div>
 
+              {ultimoReenvio?.reenvio?.id_pedido_origem === pedido.idPlanilhaDocOri && (
+                <p
+                  className={
+                    "border-t px-3 py-1.5 text-xs " +
+                    (ultimoReenvio.status === "enviada"
+                      ? "border-border/60 bg-green-500/10 text-green-700 dark:text-green-400"
+                      : "border-border/60 bg-destructive/10 text-destructive-text")
+                  }
+                >
+                  {ultimoReenvio.status === "enviada"
+                    ? `Reenviado ao Fusion como ${ultimoReenvio.reenvio.pedido_erp}.`
+                    : `Reenvio não concluído: ${ultimoReenvio.motivo ?? "ver avisos"}.`}
+                </p>
+              )}
+
               {expandido && (
                 <div className="border-t border-border/60 bg-muted/30 px-3 py-2">
+                  {tipo === "carga" && onReenviarPedido && pedidoEmReenvio !== pedido.idPlanilhaDocOri && (
+                    <div className="mb-2 flex justify-end">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="gap-1 text-xs text-muted-foreground"
+                        disabled={reenviandoPedidoId === pedido.idPlanilhaDocOri}
+                        onClick={() => iniciarReenvio(pedido.idPlanilhaDocOri)}
+                        title="Reenviar manualmente só alguns itens deste pedido, como entrega separada (cross-docking)."
+                      >
+                        {reenviandoPedidoId === pedido.idPlanilhaDocOri ? (
+                          <LoaderCircle className="size-3.5 animate-spin" />
+                        ) : (
+                          <Redo2 className="size-3.5" />
+                        )}
+                        Reenviar itens deste pedido
+                      </Button>
+                    </div>
+                  )}
+                  {pedidoEmReenvio === pedido.idPlanilhaDocOri && (
+                    <div className="mb-2 flex items-center justify-between gap-2 rounded-md bg-amber-500/10 px-2 py-1.5 text-xs text-foreground">
+                      <span>
+                        Escolha os itens que de fato seguem viagem — vão ao Fusion como uma entrega
+                        separada, sem mexer no envio original.
+                      </span>
+                      <div className="flex shrink-0 gap-1.5">
+                        <Button type="button" variant="ghost" size="sm" onClick={cancelarReenvio}>
+                          Cancelar
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          disabled={itensParaReenvio.size === 0}
+                          onClick={() => confirmarReenvio(pedido.idPlanilhaDocOri)}
+                        >
+                          Reenviar {itensParaReenvio.size || ""}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
                   <table className="w-full text-xs">
                     <thead>
                       <tr className="text-left text-muted-foreground">
+                        {pedidoEmReenvio === pedido.idPlanilhaDocOri && <th className="w-6 pb-1" />}
                         <th className="pb-1 pr-3 font-medium">Produto</th>
                         <th className="pb-1 pr-3 font-medium text-right">Qtd</th>
                         <th className="pb-1 font-medium text-right">Valor</th>
@@ -1126,6 +1253,16 @@ export function PedidosParaEnvio({
                     <tbody>
                       {pedido.itens.map((item) => (
                         <tr key={item.NUMSEQUENCIA} className="border-t border-border/40 align-top">
+                          {pedidoEmReenvio === pedido.idPlanilhaDocOri && (
+                            <td className="py-1.5 pr-1">
+                              <input
+                                type="checkbox"
+                                className="size-3.5 accent-primary"
+                                checked={itensParaReenvio.has(item.NUMSEQUENCIA)}
+                                onChange={() => alternarItemParaReenvio(item.NUMSEQUENCIA)}
+                              />
+                            </td>
+                          )}
                           <td className="py-1.5 pr-3">
                             <p
                               className="font-medium text-foreground"

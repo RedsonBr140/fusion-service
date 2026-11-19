@@ -871,6 +871,146 @@ def test_marcar_carga_integrada_sem_ciss_configurado_devolve_503(client, config)
     assert resp.status_code == 503
 
 
+# --- /cargas/.../pedidos/.../reenviar-solta (cross-docking) ----------------
+
+
+def test_reenviar_pedido_carga_solta_feliz_nunca_chama_save_carga(client, app, config):
+    usuario_com_a_tool(client, config)
+    app.config["CISS_DB_CLIENT"] = CissClientFalso(
+        detalhe=DETALHE, itens=[ITEM], clientes={26623: {"CODIGO_CLIENTE": 26623, "RAZAO_CLIENTE": "X"}}
+    )
+    fusion = FusionClienteFalso(resultado_entrega_servico={"success": ["ok"], "errors": []})
+    app.config["FUSION_CLIENT"] = fusion
+
+    resp = client.post(
+        f"{PREFIXO}/cargas/3/22099141/pedidos/22083047/reenviar-solta", json={"itens": [1]}
+    )
+
+    assert resp.status_code == 200
+    corpo = resp.get_json()
+    assert corpo["status"] == "enviada"
+    # Nunca forma carga nova nem chama saveCarga de novo — só saveEntregaServico.
+    assert fusion.enviado is None
+    assert fusion.enviado_entrega_servico is not None
+    entrega = fusion.enviado_entrega_servico[0]
+    assert entrega["podeformarcarga"] == "S"
+    assert entrega["pedido_erp"].startswith("612442_22099141R")
+    # Nunca igual ao sufixo do envio original (sem o "R") — identidade própria.
+    assert entrega["pedido_erp"] != "612442_22099141"
+
+
+def test_reenviar_pedido_carga_solta_nao_mistura_item_de_outro_pedido_com_mesmo_numseq(
+    client, app, config
+):
+    """Regressão: NUMSEQUENCIA não é globalmente único numa carga, reseta
+    por pré-nota/pedido (ver integrations/ciss.py::get_itens_carga). Um
+    item de outro pedido com o mesmo NUMSEQUENCIA nunca pode vazar pro
+    reenvio de um pedido diferente."""
+    usuario_com_a_tool(client, config)
+    item_outro_pedido = {
+        **ITEM,
+        "IDPLANILHADOCORI": 22083099,
+        "IDORCAMENTO": 700000,
+        "NUMNOTA": 999999,
+        "NUMSEQUENCIA": 1,  # mesmo NUMSEQUENCIA do ITEM, pedido diferente
+    }
+    app.config["CISS_DB_CLIENT"] = CissClientFalso(
+        detalhe=DETALHE,
+        itens=[ITEM, item_outro_pedido],
+        clientes={26623: {"CODIGO_CLIENTE": 26623, "RAZAO_CLIENTE": "X"}},
+    )
+    fusion = FusionClienteFalso(resultado_entrega_servico={"success": ["ok"], "errors": []})
+    app.config["FUSION_CLIENT"] = fusion
+
+    resp = client.post(
+        f"{PREFIXO}/cargas/3/22099141/pedidos/22083047/reenviar-solta", json={"itens": [1]}
+    )
+
+    assert resp.status_code == 200
+    assert resp.get_json()["status"] == "enviada"
+    entrega = fusion.enviado_entrega_servico[0]
+    assert entrega["nf"] == "165858"  # NUMNOTA do ITEM, não do item_outro_pedido (999999)
+    assert len(entrega["itens"]) == 1
+
+
+def test_reenviar_pedido_carga_solta_cada_chamada_gera_pedido_erp_novo(client, app, config):
+    usuario_com_a_tool(client, config)
+    app.config["CISS_DB_CLIENT"] = CissClientFalso(
+        detalhe=DETALHE, itens=[ITEM], clientes={26623: {"CODIGO_CLIENTE": 26623, "RAZAO_CLIENTE": "X"}}
+    )
+    fusion = FusionClienteFalso(resultado_entrega_servico={"success": ["ok"], "errors": []})
+    app.config["FUSION_CLIENT"] = fusion
+
+    primeiro = client.post(
+        f"{PREFIXO}/cargas/3/22099141/pedidos/22083047/reenviar-solta", json={"itens": [1]}
+    )
+    segundo = client.post(
+        f"{PREFIXO}/cargas/3/22099141/pedidos/22083047/reenviar-solta", json={"itens": [1]}
+    )
+
+    pedido_erp_1 = primeiro.get_json()["reenvio"]["pedido_erp"]
+    pedido_erp_2 = segundo.get_json()["reenvio"]["pedido_erp"]
+    assert pedido_erp_1 != pedido_erp_2
+    # Cada reenvio é um "saveEntregaServico" próprio — nunca upsert sobre o anterior.
+    assert fusion.enviado_entrega_servico[0]["pedido_erp"] == pedido_erp_2
+
+
+def test_reenviar_pedido_carga_solta_pedido_inexistente_fica_pendente_sem_404(client, app, config):
+    usuario_com_a_tool(client, config)
+    app.config["CISS_DB_CLIENT"] = CissClientFalso(detalhe=DETALHE, itens=[ITEM])
+    app.config["FUSION_CLIENT"] = FusionClienteFalso()
+
+    resp = client.post(f"{PREFIXO}/cargas/3/22099141/pedidos/99999999/reenviar-solta", json={})
+
+    assert resp.status_code == 200
+    assert resp.get_json()["status"] == "pendente"
+
+
+def test_reenviar_pedido_carga_solta_carga_inexistente_devolve_404(client, app, config):
+    usuario_com_a_tool(client, config)
+    app.config["CISS_DB_CLIENT"] = CissClientFalso(detalhe=None)
+
+    resp = client.post(f"{PREFIXO}/cargas/3/22099141/pedidos/22083047/reenviar-solta", json={})
+
+    assert resp.status_code == 404
+
+
+def test_reenviar_pedido_carga_solta_sem_sessao_devolve_401(client):
+    resp = client.post(f"{PREFIXO}/cargas/3/22099141/pedidos/22083047/reenviar-solta")
+    assert resp.status_code == 401
+
+
+def test_reenviar_pedido_carga_solta_nao_afetado_por_somente_pedidos_soltos(client, app, config):
+    usuario_com_a_tool(client, config)
+    _ligar_somente_pedidos_soltos(app, config)
+
+    resp = client.post(f"{PREFIXO}/cargas/3/22099141/pedidos/22083047/reenviar-solta", json={})
+
+    # Sem CISS configurado: o que importa é não ser 403 (bloqueado pela flag).
+    assert resp.status_code != 403
+    assert resp.status_code == 503
+
+
+def test_ver_reenvios_carga_lista_historico(client, app, config):
+    usuario_com_a_tool(client, config)
+    app.config["CISS_DB_CLIENT"] = CissClientFalso(
+        detalhe=DETALHE, itens=[ITEM], clientes={26623: {"CODIGO_CLIENTE": 26623, "RAZAO_CLIENTE": "X"}}
+    )
+    app.config["FUSION_CLIENT"] = FusionClienteFalso(
+        resultado_entrega_servico={"success": ["ok"], "errors": []}
+    )
+    client.post(f"{PREFIXO}/cargas/3/22099141/pedidos/22083047/reenviar-solta", json={"itens": [1]})
+
+    resp = client.get(f"{PREFIXO}/cargas/3/22099141/reenvios")
+
+    assert resp.status_code == 200
+    reenvios = resp.get_json()["reenvios"]
+    assert len(reenvios) == 1
+    assert reenvios[0]["status"] == "ENVIADA"
+    assert reenvios[0]["id_pedido_origem"] == 22083047
+    assert reenvios[0]["itens"] == [1]
+
+
 def test_enviar_carga_depois_de_marcada_integrada_recusa_sem_forcar(client, app, config):
     usuario_com_a_tool(client, config)
     _cadastrar_motorista_e_veiculo_da_carga(client, app)

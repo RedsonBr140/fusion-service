@@ -694,6 +694,42 @@ carga) — `get_itens_carga`/`get_itens_pre_carga` ganharam um
 item de `entregas_servico`. Pedido sem observação cadastrada manda `""`,
 nunca falta o campo.
 
+## NF/cliente/valor de um pedido sem orçamento — `PRODUTO_RETIRADO_NOTAS` nunca tem linha pra esse caso
+
+Achado em produção, reportado pelo usuário como "carga incoerente entre o
+ERP e o sistema" (carga `1_22263328`, pré-nota `22260586`): a entrega sem
+`IDORCAMENTO` aparecia na tela como `"Pré-nota 22260586 · sem orçamento ·
+Cliente não identificado · R$ 0,00"`, mas a nota fiscal (167089,
+"PREFEITURA MUNICIPAL DE TRIUNFO", R$ 2.387,28) existia de verdade e
+aparecia normalmente na tela do próprio ERP (CISS).
+
+Causa: a cadeia de `JOIN` que resolve NF/cliente/valor em
+`get_itens_carga` (`N`/`NES`/`EA`) é toda ancorada em
+`PRODUTO_RETIRADO_NOTAS` (`PRN.IDPLANILHANOTA`/`PRN.IDEMPRESANOTA`/
+`PRN.NUMSEQUENCIANOTA`) — e `PRN` **nunca tem linha nenhuma** pra um
+pedido sem orçamento, confirmado contra uma amostra completa desde o
+corte de integração: 32276 de 32276 pré-notas sem orçamento têm zero
+linhas em `PRODUTO_RETIRADO_NOTAS`. Sem `PRN`, `N`/`NES`/`EA` saem `NULL`
+sempre — não é que a NF não exista, é que o caminho de junção usado pra
+achar ela não se aplica a esse caso.
+
+A NF de verdade mora em outro lugar pra esse caso específico: `NOTAS`/
+`NOTAS_ENTRADA_SAIDA`/`ESTOQUE_ANALITICO` têm uma linha com
+`IDPLANILHA = PR.IDPLANILHADOCORI` **direto** (não via `PRN`) —
+`ESTOQUE_ANALITICO` inclusive com `NUMSEQUENCIA = PR.NUMSEQUENCIA`
+direto, sem indireção nenhuma. `get_itens_carga` ganhou um segundo grupo
+de `LEFT JOIN` (`N2`/`NES2`/`EA2`) por esse caminho direto, usado via
+`COALESCE` só quando o caminho via `PRN` não achou nada.
+
+**O guard que importa**: um pedido *com* orçamento também tem uma linha
+em `NOTAS` por esse mesmo join direto (`NOTAS.IDPLANILHA` igualando a
+pré-nota) — mas é um registro interno de PDV (`SERIENOTA = 'PDV'`,
+`NUMNOTA` igual ao próprio `IDPLANILHA`, não uma NF de verdade). Sem
+filtrar `N2.SERIENOTA <> 'PDV'`, o fallback substituiria a NF real (já
+resolvida certo pelo caminho via `PRN`) por esse registro interno errado
+pra todo pedido *com* orçamento — por isso o fallback só contribui
+quando o caminho primário (`PRN`) não achou nada pra começo de conversa.
+
 ## Pendências de dado conhecidas
 
 - Praça/rota reais (ver acima) — placeholder funciona, sem fonte no CISS.

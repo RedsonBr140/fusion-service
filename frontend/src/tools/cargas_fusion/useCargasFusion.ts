@@ -7,7 +7,9 @@ import {
   getCargaFusionPreview,
   getCargasFusion,
   getEmpresasCargasFusion,
+  getReenviosCargaFusion,
   marcarCargaFusionIntegrada,
+  reenviarPedidoCargaFusionSolto,
 } from "@/api";
 import type { SelecaoEnvioCargaFusion } from "@/types";
 
@@ -96,6 +98,40 @@ export function useEnviarCarga() {
       queryClient.invalidateQueries({ queryKey: ["cargas-fusion", "fila"] });
       queryClient.invalidateQueries({
         queryKey: ["cargas-fusion", "preview", variaveis.idEmpresa, variaveis.idPlanilha],
+      });
+    },
+  });
+}
+
+/** Histórico de reenvios avulsos (cross-docking) já feitos pra esta carga. */
+export function useReenviosCarga(selecionada: { idEmpresa: number; idPlanilha: number } | null) {
+  return useQuery({
+    queryKey: ["cargas-fusion", "reenvios", selecionada?.idEmpresa, selecionada?.idPlanilha],
+    queryFn: async () =>
+      (await getReenviosCargaFusion(selecionada!.idEmpresa, selecionada!.idPlanilha)).reenvios,
+    enabled: selecionada !== null,
+  });
+}
+
+/** Reenvio manual avulso de um pedido dentro de uma carga já enviada —
+ * cross-docking, ver `reenviarPedidoCargaFusionSolto`. */
+export function useReenviarPedidoCargaSolto() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      idEmpresa,
+      idPlanilha,
+      idPedidoOrigem,
+      itens,
+    }: {
+      idEmpresa: number;
+      idPlanilha: number;
+      idPedidoOrigem: number;
+      itens?: number[] | null;
+    }) => reenviarPedidoCargaFusionSolto(idEmpresa, idPlanilha, idPedidoOrigem, itens),
+    onSuccess: (_dados, variaveis) => {
+      queryClient.invalidateQueries({
+        queryKey: ["cargas-fusion", "reenvios", variaveis.idEmpresa, variaveis.idPlanilha],
       });
     },
   });

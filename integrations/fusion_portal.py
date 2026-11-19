@@ -32,8 +32,9 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Iterator
-from contextlib import contextmanager
+import threading
+import time
+from collections.abc import Callable
 from pathlib import Path
 from tempfile import gettempdir
 from typing import TYPE_CHECKING
@@ -101,51 +102,93 @@ def _veiculo_para_dict(veiculo: _FusionPyVeiculo) -> dict[str, object]:
 
 
 class FusionPortalClient:
-    """Descartável por chamada, como `integrations.fusion.FusionClient`:
-    loga de novo a cada consulta — a frequência de uso (antes de um envio
-    manual de carga ou pré-carga) não justifica manter sessão viva entre
-    chamadas."""
+    """Sessão cacheada por até `_TTL_SESSAO_SEGUNDOS` (1h) — achado em
+    produção, 2026-11-19: a versão anterior ("descartável por chamada",
+    login novo a cada consulta) assumia uso raro, só antes de um envio
+    manual, mas a tela hoje refaz a prévia (e com ela `motorista_sugerido`/
+    `veiculo_sugerido`, 2 logins) a cada mudança de seleção — 82 logins
+    contra o portal em 12 minutos de uso normal, cada um ~1.3-1.4s, dando a
+    impressão de "estar sendo rate-limitado" pelo Fusion quando na verdade
+    éramos nós relogando sem necessidade. O portal em si respondeu normal
+    nos testes (sem 429, sem erro) — o problema era só volume/latência
+    autoinfligida.
+
+    Reusa a mesma sessão logada entre chamadas (processo inteiro, não por
+    request — `self` vive em `app.config["FUSION_PORTAL_CLIENT"]`, uma
+    instância por worker do gunicorn). Se uma chamada falhar com a sessão
+    cacheada (pode ter expirado do lado do Fusion antes da hora, ou sido
+    encerrada por outro motivo), descarta e tenta de novo com login novo —
+    só propaga erro se a segunda tentativa também falhar. `_lock` serializa
+    todo uso (login e as chamadas que usam a sessão) porque `fusion-py` não
+    documenta ser thread-safe; isso é seguro aqui porque o volume por
+    processo é baixo e o gargalo de qualquer forma é rede, não CPU."""
+
+    _TTL_SESSAO_SEGUNDOS = 3600
 
     def __init__(self, config: "FusionPortalConfig") -> None:
         self._config = config
+        self._lock = threading.Lock()
+        self._cliente: _FusionPyClient | None = None
+        self._login_em: float | None = None
 
-    @contextmanager
-    def _sessao(self) -> Iterator[_FusionPyClient]:
+    def _login_novo(self) -> _FusionPyClient:
+        # `_FusionPyError` sobe crua daqui de propósito — `_com_sessao` é
+        # quem decide reentar/embrulhar, pra uma falha de login (não só de
+        # ação) também ganhar a segunda tentativa.
         cliente = _FusionPyClient(_DOWNLOAD_DIR, config=_FusionPyConfig(base_url=self._config.url))
-        try:
-            cliente.login(self._config.login, self._config.senha)
-            yield cliente
-        except _FusionPyError as exc:
-            raise FusionPortalError(str(exc)) from exc
-        finally:
-            cliente.close()
+        cliente.login(self._config.login, self._config.senha)
+        return cliente
+
+    def _descartar_sessao_sem_lock(self) -> None:
+        if self._cliente is not None:
+            try:
+                self._cliente.close()
+            except Exception:
+                logger.warning("Falha ao fechar sessão antiga do portal Fusion — ignorada.")
+        self._cliente = None
+        self._login_em = None
+
+    def _sessao_sem_lock(self) -> _FusionPyClient:
+        agora = time.monotonic()
+        expirada = self._login_em is None or (agora - self._login_em) >= self._TTL_SESSAO_SEGUNDOS
+        if self._cliente is None or expirada:
+            self._descartar_sessao_sem_lock()
+            self._cliente = self._login_novo()
+            self._login_em = agora
+        return self._cliente
+
+    def _com_sessao(self, acao: Callable[[_FusionPyClient], object]) -> object:
+        """Executa `acao(cliente)` com a sessão cacheada; numa falha — de
+        login ou da própria ação —, descarta a sessão e tenta mais uma vez
+        com login novo. Só propaga `FusionPortalError` se a segunda
+        tentativa também falhar."""
+        with self._lock:
+            for ultima_tentativa in (False, True):
+                try:
+                    cliente = self._sessao_sem_lock()
+                    return acao(cliente)
+                except _FusionPyError as exc:
+                    self._descartar_sessao_sem_lock()
+                    if ultima_tentativa:
+                        raise FusionPortalError(str(exc)) from exc
+        raise AssertionError("unreachable")  # pragma: no cover
 
     def cliente_cadastrado(self, codigo_erp: str) -> bool:
         """True se já existe cliente com este `codigo_erp` no Fusion."""
-        with self._sessao() as cliente:
-            try:
-                pagina = cliente.buscar_clientes(_CAMPO_CLIENTE_CODIGO_ERP, codigo_erp)
-            except _FusionPyError as exc:
-                raise FusionPortalError(str(exc)) from exc
+        pagina = self._com_sessao(lambda cliente: cliente.buscar_clientes(_CAMPO_CLIENTE_CODIGO_ERP, codigo_erp))
         return pagina.total > 0
 
     def motorista_por_codigo_erp(self, codigo_erp: str) -> dict[str, object] | None:
         """O motorista com este `codigo_erp`, ou `None` se não cadastrado."""
-        with self._sessao() as cliente:
-            try:
-                pagina = cliente.buscar_motoristas(_CAMPO_MOTORISTA_CODIGO_ERP, codigo_erp)
-            except _FusionPyError as exc:
-                raise FusionPortalError(str(exc)) from exc
+        pagina = self._com_sessao(
+            lambda cliente: cliente.buscar_motoristas(_CAMPO_MOTORISTA_CODIGO_ERP, codigo_erp)
+        )
         return _motorista_para_dict(pagina.rows[0]) if pagina.rows else None
 
     def buscar_motoristas(self, termo: str, *, rows: int = 20) -> list[dict[str, object]]:
         """Busca por nome — usado no picker manual da tela (escolha de
         motorista, tanto em carga real quanto em pré-carga)."""
-        with self._sessao() as cliente:
-            try:
-                pagina = cliente.buscar_motoristas(_CAMPO_MOTORISTA_NOME, termo, rows=rows)
-            except _FusionPyError as exc:
-                raise FusionPortalError(str(exc)) from exc
+        pagina = self._com_sessao(lambda cliente: cliente.buscar_motoristas(_CAMPO_MOTORISTA_NOME, termo, rows=rows))
         return [_motorista_para_dict(m) for m in pagina.rows]
 
     def veiculo_por_codigo_erp(self, codigo_erp: str) -> dict[str, object] | None:
@@ -153,11 +196,7 @@ class FusionPortalClient:
         mesmo papel de `motorista_por_codigo_erp`, pra escolha manual na
         tela. Mesma ressalva de `veiculo_por_placa`: sem filtro server-side
         confirmado, lista tudo e compara aqui."""
-        with self._sessao() as cliente:
-            try:
-                pagina = cliente.buscar_veiculos(rows=250)
-            except _FusionPyError as exc:
-                raise FusionPortalError(str(exc)) from exc
+        pagina = self._com_sessao(lambda cliente: cliente.buscar_veiculos(rows=250))
         for veiculo in pagina.rows:
             if veiculo.codigo_erp == codigo_erp:
                 return _veiculo_para_dict(veiculo)
@@ -169,11 +208,7 @@ class FusionPortalClient:
         tudo), então busca a lista inteira e compara a placa normalizada
         aqui — mesmo critério de `cargas_fusion/service.py::normalizar_placa`."""
         placa_norm = _normalizar_placa(placa)
-        with self._sessao() as cliente:
-            try:
-                pagina = cliente.buscar_veiculos(rows=250)
-            except _FusionPyError as exc:
-                raise FusionPortalError(str(exc)) from exc
+        pagina = self._com_sessao(lambda cliente: cliente.buscar_veiculos(rows=250))
         for veiculo in pagina.rows:
             if _normalizar_placa(veiculo.placa) == placa_norm:
                 return _veiculo_para_dict(veiculo)
@@ -187,11 +222,7 @@ class FusionPortalClient:
         termo_norm = termo.strip().lower()
         if not termo_norm:
             return []
-        with self._sessao() as cliente:
-            try:
-                pagina = cliente.buscar_veiculos(rows=rows)
-            except _FusionPyError as exc:
-                raise FusionPortalError(str(exc)) from exc
+        pagina = self._com_sessao(lambda cliente: cliente.buscar_veiculos(rows=rows))
         return [
             _veiculo_para_dict(veiculo)
             for veiculo in pagina.rows

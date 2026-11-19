@@ -42,6 +42,47 @@ CREATE TABLE IF NOT EXISTS cargas_fusion_fila (
     UNIQUE (id_empresa, id_planilha)
 );
 
+-- Reenvio manual avulso de um pedido dentro de uma carga já enviada (ex.
+-- cross-docking: pedido que veio de outra filial pra este CD em vez de ir
+-- direto pro cliente final, sem suporte a isso no CISS/Fusion — alguém
+-- precisa reenviar manualmente os itens que de fato seguem viagem). Nunca
+-- forma uma carga nova no CISS (mexeria no histórico de verdade) nem chama
+-- saveCarga de novo (upsert do Fusion pra um codigo_erp já existente não é
+-- confirmado) — só saveEntregaServico, com podeformarcarga:"S", igual ao
+-- modo solto de pré-carga (ver montar_payload_pre_carga_solta/SOLTA).
+--
+-- Cada reenvio é uma LINHA NOVA, nunca um upsert — ao contrário de
+-- cargas_fusion_fila/cargas_fusion_precarga_fila (uma linha por carga/
+-- pré-carga, reenviar sobrescreve). O ponto inteiro deste recurso é poder
+-- reenviar o mesmo pedido mais de uma vez (ex. primeiro metade dos itens,
+-- depois o resto), cada vez como uma entrega genuinamente separada no
+-- Fusion — por isso o próprio `id` autoincrement desta tabela entra no
+-- sufixo do pedido_erp gerado (`{id_planilha}R{id}`), garantindo um
+-- pedido_erp novo e nunca repetido a cada reenvio (ver
+-- `registrar_reenvio_pedido`/`montar_payload_carga_reenvio_solto` em
+-- cargas_fusion/service.py).
+CREATE TABLE IF NOT EXISTS cargas_fusion_reenvios (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    id_empresa       INTEGER NOT NULL,
+    id_planilha      INTEGER NOT NULL,
+    -- IDPLANILHADOCORI do pedido reenviado (a mesma chave de agrupamento
+    -- de _agrupar_itens_por_pedido) — não IDORCAMENTO, que pode ser NULL.
+    id_pedido_origem INTEGER NOT NULL,
+    -- pedido_erp de fato usado na chamada ao Fusion — só preenchido depois
+    -- de montar o payload (precisa do próprio `id` desta linha).
+    pedido_erp       TEXT,
+    -- JSON: lista de NUMSEQUENCIA (escopados a este pedido) que foram
+    -- escolhidos pra este reenvio.
+    itens            TEXT NOT NULL DEFAULT '[]',
+    usuario          TEXT,
+    status           TEXT NOT NULL DEFAULT 'PENDENTE' CHECK (status IN ('PENDENTE', 'ENVIADA')),
+    motivo           TEXT,
+    avisos           TEXT NOT NULL DEFAULT '[]',
+    enviado_em       TEXT,
+    created_at       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS fusion_clientes_sincronizados (
     idclifor_ciss INTEGER PRIMARY KEY,
     created_at    TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP

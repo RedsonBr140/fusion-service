@@ -138,6 +138,40 @@ export interface ItemFilaFusion {
   integrada_manualmente: boolean;
 }
 
+/** Reenvio manual avulso de um pedido dentro de uma carga já enviada —
+ * cross-docking (pedido que chegou neste CD em vez de ir direto pro
+ * cliente final). Só `saveEntregaServico` (`podeformarcarga: "S"`), nunca
+ * `saveCarga` de novo — cada reenvio é uma linha nova, com `pedido_erp`
+ * próprio, nunca um upsert sobre o envio original nem sobre um reenvio
+ * anterior. */
+export interface ReenvioPedidoCargaFusion {
+  id: number;
+  id_empresa: number;
+  id_planilha: number;
+  /** IDPLANILHADOCORI do pedido reenviado — a mesma chave que agrupa os
+   * pedidos na tela, não IDORCAMENTO (pode ser null). */
+  id_pedido_origem: number;
+  /** Só preenchido depois que o payload é montado (precisa do próprio
+   * `id` desta linha pra ficar único) — null numa falha bem no início. */
+  pedido_erp: string | null;
+  /** NUMSEQUENCIA (escopados ao pedido) escolhidos pra este reenvio. */
+  itens: number[];
+  usuario: string | null;
+  status: "PENDENTE" | "ENVIADA";
+  motivo: string | null;
+  avisos: string[];
+  enviado_em: string | null;
+  created_at: string;
+}
+
+export interface ResultadoReenvioPedidoCargaFusion {
+  status: "enviada" | "pendente";
+  resultado?: unknown;
+  motivo?: string;
+  avisos?: string[];
+  reenvio?: ReenvioPedidoCargaFusion;
+}
+
 // --- Pré-cargas Fusion ------------------------------------------------------
 // Addendum à spec 2026-10-14-cargas-fusion-design.md: DBA.PRE_CARGA é o
 // estágio anterior à carga (DBA.RETIRADA_PRODUTOS), sem motorista/veículo

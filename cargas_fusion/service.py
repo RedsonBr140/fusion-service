@@ -1061,25 +1061,34 @@ def montar_payload_pre_carga(
     )
 
 
-def montar_payload_pre_carga_solta(
-    detalhe: Mapping[str, object],
+def _montar_payload_entrega_solta(
+    id_empresa: int,
     itens: Sequence[Mapping[str, object]],
     clientes_por_idclifor: Mapping[int, Mapping[str, object] | None],
+    sufixo_pedido: str,
+    *,
+    rotulo_origem: str = "pré-carga",
 ) -> tuple[list[dict], list[str], list[str]]:
-    """Modo alternativo de envio de pré-carga: só `saveEntregaServico`,
+    """Núcleo compartilhado do envio "solto": só `saveEntregaServico`,
     nunca `saveCarga` — o pedido chega ao Fusion sem estar empacotado
-    dentro de um `cargas[]` (`PC_...`, ver `montar_payload_pre_carga`),
-    pra ficar disponível na tela "Formação de carga" do próprio Fusion
-    pra quem for agrupar manualmente lá. Sem motorista/veículo, sem
-    `entrega[]` stub, sem `cargas[]` — não existe carga nenhuma sendo
-    formada por esta tool neste modo.
+    dentro de um `cargas[]`, pra ficar disponível na tela "Formação de
+    carga" do próprio Fusion pra quem for agrupar/rotear manualmente lá.
+    Sem motorista/veículo, sem `entrega[]` stub, sem `cargas[]` — não
+    existe carga nenhuma sendo formada por esta tool neste modo.
 
-    Só existe pra pré-carga de **um único pedido**: não há como uma
-    pré-carga com mais de um pedido virar uma única entrega solta sem
-    reintroduzir o mesmo problema que o modo padrão resolve (agrupamento
-    sem um objeto que amarre os pedidos). Mais de um pedido devolve lista
-    vazia com aviso bloqueante — quem chama nunca deveria enviar nesse
-    caso.
+    Usado por `montar_payload_pre_carga_solta` (pré-carga de pedido
+    único, `sufixo_pedido=f"PC{id_precarga}"`) e por
+    `montar_payload_carga_reenvio_solto` (reenvio avulso de um pedido
+    dentro de uma carga real já enviada — cross-docking, ver
+    `registrar_reenvio_pedido` — `sufixo_pedido=f"{id_planilha}R{id}"`,
+    sempre um sufixo novo por chamada, pra nunca colidir com o
+    `pedido_erp` do envio original nem de um reenvio anterior).
+
+    Só existe pra **um único pedido**: não há como mais de um pedido virar
+    uma única entrega solta sem reintroduzir o problema que o modo padrão
+    resolve (agrupamento sem um objeto que amarre os pedidos). Mais de um
+    pedido devolve lista vazia com aviso bloqueante — quem chama nunca
+    deveria enviar nesse caso.
 
     `podeformarcarga` vai como `"S"` aqui (modo padrão manda `"N"`,
     porque lá a tool já formou a carga) — confirmado contra produção que
@@ -1098,20 +1107,18 @@ def montar_payload_pre_carga_solta(
             avisos_bloqueantes.append(texto)
 
     if not itens:
-        _aviso("Nenhuma entrega selecionada para esta pré-carga.")
+        _aviso("Nenhuma entrega selecionada para o envio solto.")
         return [], avisos, avisos_bloqueantes
 
     grupos = list(_agrupar_itens_por_pedido(itens))
     if len(grupos) != 1:
         _aviso(
-            f"Pré-carga tem {len(grupos)} pedido(s) — envio solto só é permitido "
-            "para pré-carga de um único pedido."
+            f"{rotulo_origem.capitalize()} tem {len(grupos)} pedido(s) — envio solto só é "
+            f"permitido para {rotulo_origem} de um único pedido."
         )
         return [], avisos, avisos_bloqueantes
 
     id_pedido_origem, itens_do_pedido = grupos[0]
-    id_empresa = detalhe["IDEMPRESA"]
-    id_precarga = detalhe["IDPRECARGA"]
     primeiro = itens_do_pedido[0]
 
     numero_pedido = primeiro.get("IDORCAMENTO")
@@ -1130,7 +1137,7 @@ def montar_payload_pre_carga_solta(
     if id_clifor and cliente_ciss is None:
         _aviso(f"Cliente {id_clifor} do pedido {id_pedido_origem} não encontrado no CISS.")
 
-    cod_pedido = codigo_pedido_generico(numero_pedido, f"PC{id_precarga}")
+    cod_pedido = codigo_pedido_generico(numero_pedido, sufixo_pedido)
     valor_total = sum(_numero(i.get("VALTOTLIQUIDO")) or 0 for i in itens_do_pedido)
     peso_total = sum(_peso_item(i) for i in itens_do_pedido)
     cubagem_total = sum(
@@ -1177,6 +1184,41 @@ def montar_payload_pre_carga_solta(
         ],
     }
     return [entrega_servico], avisos, avisos_bloqueantes
+
+
+def montar_payload_pre_carga_solta(
+    detalhe: Mapping[str, object],
+    itens: Sequence[Mapping[str, object]],
+    clientes_por_idclifor: Mapping[int, Mapping[str, object] | None],
+) -> tuple[list[dict], list[str], list[str]]:
+    """Wrapper de `_montar_payload_entrega_solta` pra pré-carga — ver lá
+    para o shape completo e o porquê de cada decisão. Sufixo do
+    `pedido_erp`: `PC{id_precarga}`, nunca colide com `codigo_carga`/
+    `codigo_pedido` de carga real (namespace próprio, ver
+    `codigo_pre_carga`)."""
+    id_empresa = detalhe["IDEMPRESA"]
+    id_precarga = detalhe["IDPRECARGA"]
+    return _montar_payload_entrega_solta(
+        id_empresa, itens, clientes_por_idclifor, f"PC{id_precarga}"
+    )
+
+
+def montar_payload_carga_reenvio_solto(
+    id_empresa: int,
+    itens: Sequence[Mapping[str, object]],
+    clientes_por_idclifor: Mapping[int, Mapping[str, object] | None],
+    sufixo_reenvio: str,
+) -> tuple[list[dict], list[str], list[str]]:
+    """Wrapper de `_montar_payload_entrega_solta` pro reenvio manual
+    avulso de um pedido dentro de uma carga real já enviada — ver lá para
+    o shape completo. `sufixo_reenvio` (`f"{id_planilha}R{id}"`, `id` da
+    linha de `cargas_fusion_reenvios` recém-criada por
+    `registrar_reenvio_pedido`) nunca colide com o sufixo do envio
+    original da carga (`str(id_planilha)`, sem o `R`) nem com o de um
+    reenvio anterior (cada um tem seu próprio `id`)."""
+    return _montar_payload_entrega_solta(
+        id_empresa, itens, clientes_por_idclifor, sufixo_reenvio, rotulo_origem="reenvio"
+    )
 
 
 def preparar_envio_pre_carga_solta(
@@ -1999,3 +2041,221 @@ def processar_envio_pre_carga_solta(
         conn, id_empresa, id_precarga, codigo_erp, None, None, None, None, modo="SOLTA",
     )
     return {"status": "enviada", "resultado": resultado, "fila": fila}
+
+
+# --- Reenvio avulso de pedido dentro de uma carga real ---------------------
+#
+# Cross-docking: um pedido que deveria ir de Serra Talhada direto pro
+# cliente final às vezes chega neste CD em vez disso (o Fusion/CISS não tem
+# suporte a cross-dock) — alguém aqui precisa decidir manualmente quais
+# itens de fato seguem viagem e reenviar só esses ao Fusion, como uma
+# entrega genuinamente separada da carga original (nunca sobrescrevendo o
+# que já foi enviado, e sem formar carga nova no CISS — isso corromperia o
+# histórico real). O mecanismo é o mesmo "envio solto" já usado por
+# pré-carga de pedido único (`montar_payload_carga_reenvio_solto`, acima):
+# só `saveEntregaServico`, `podeformarcarga: "S"`, pra um despachante no
+# Fusion formar manualmente a carga da perna CD→cliente — que pode ter
+# motorista/veículo/data diferentes da perna original, então não faz
+# sentido herdar nada disso da carga que trouxe o pedido até aqui.
+
+
+def _linha_reenvio(linha: sqlite3.Row) -> dict[str, object]:
+    return {
+        "id": linha["id"],
+        "id_empresa": linha["id_empresa"],
+        "id_planilha": linha["id_planilha"],
+        "id_pedido_origem": linha["id_pedido_origem"],
+        "pedido_erp": linha["pedido_erp"],
+        "itens": json.loads(linha["itens"]) if linha["itens"] else [],
+        "usuario": linha["usuario"],
+        "status": linha["status"],
+        "motivo": linha["motivo"],
+        "avisos": json.loads(linha["avisos"]) if linha["avisos"] else [],
+        "enviado_em": _sqlite_utc_iso(linha["enviado_em"]),
+        "created_at": _sqlite_utc_iso(linha["created_at"]),
+    }
+
+
+def listar_reenvios_pedido(
+    conn: sqlite3.Connection, id_empresa: int, id_planilha: int
+) -> list[dict]:
+    """Histórico de reenvios avulsos já feitos pra esta carga (qualquer
+    pedido dela), mais recente primeiro — pra tela mostrar o que já foi
+    mandado antes de alguém mandar de novo."""
+    linhas = conn.execute(
+        "SELECT * FROM cargas_fusion_reenvios WHERE id_empresa = ? AND id_planilha = ? "
+        "ORDER BY created_at DESC",
+        (id_empresa, id_planilha),
+    )
+    return [_linha_reenvio(linha) for linha in linhas]
+
+
+def registrar_reenvio_pedido(
+    conn: sqlite3.Connection,
+    id_empresa: int,
+    id_planilha: int,
+    id_pedido_origem: int,
+    numeros_sequencia: Sequence[int],
+    usuario: str | None,
+) -> int:
+    """Grava a *tentativa* de reenvio antes de montar o payload — o `id`
+    autoincrement desta linha nova é o que torna o `pedido_erp` deste
+    reenvio único (`{id_planilha}R{id}`, ver
+    `montar_payload_carga_reenvio_solto`), então precisa existir antes da
+    chamada ao Fusion, não depois. `pedido_erp`/`status`/`avisos` ficam
+    preenchidos por `_marcar_resultado_reenvio_pedido` depois do envio."""
+    with conn:
+        cursor = conn.execute(
+            "INSERT INTO cargas_fusion_reenvios "
+            "(id_empresa, id_planilha, id_pedido_origem, itens, usuario) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                id_empresa,
+                id_planilha,
+                id_pedido_origem,
+                json.dumps(list(numeros_sequencia), ensure_ascii=False),
+                usuario,
+            ),
+        )
+    return cursor.lastrowid
+
+
+def _marcar_resultado_reenvio_pedido(
+    conn: sqlite3.Connection,
+    reenvio_id: int,
+    *,
+    status: str,
+    motivo: str | None,
+    avisos: Sequence[str],
+    pedido_erp: str | None = None,
+    enviado: bool = False,
+) -> dict:
+    with conn:
+        conn.execute(
+            "UPDATE cargas_fusion_reenvios SET status = ?, motivo = ?, avisos = ?, "
+            "pedido_erp = COALESCE(?, pedido_erp), "
+            "enviado_em = CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE enviado_em END, "
+            "updated_at = CURRENT_TIMESTAMP "
+            "WHERE id = ?",
+            (status, motivo, json.dumps(list(avisos), ensure_ascii=False), pedido_erp, enviado, reenvio_id),
+        )
+    linha = conn.execute(
+        "SELECT * FROM cargas_fusion_reenvios WHERE id = ?", (reenvio_id,)
+    ).fetchone()
+    return _linha_reenvio(linha)
+
+
+def preparar_reenvio_pedido_carga(
+    client,
+    conn: sqlite3.Connection,
+    id_empresa: int,
+    id_planilha: int,
+    id_pedido_origem: int,
+    usuario: str | None,
+    *,
+    itens_selecionados: set[int] | None = None,
+) -> tuple[int, list[dict], list[str], list[str], Mapping[int, Mapping[str, object] | None]] | None:
+    """Busca no CISS os itens do pedido indicado dentro desta carga, monta
+    o payload de reenvio avulso, e já registra a tentativa na tabela de
+    auditoria (`registrar_reenvio_pedido`) — devolve `None` só quando a
+    carga não existe mais no CISS.
+
+    Importante: a seleção de itens (`itens_selecionados`, um conjunto de
+    `NUMSEQUENCIA`) é aplicada **depois** de restringir os itens ao pedido
+    (`IDPLANILHADOCORI == id_pedido_origem`), nunca antes — `NUMSEQUENCIA`
+    não é globalmente único numa carga, reseta por pré-nota/pedido (achado
+    em produção, ver `get_itens_carga` em `integrations/ciss.py`). Filtrar
+    por `NUMSEQUENCIA` direto na lista inteira da carga arriscaria pegar o
+    item errado de outro pedido que por coincidência tem o mesmo número.
+
+    Pedido inexistente nesta carga (id errado, ou todos os itens dele
+    filtrados por `FLAGUTILIZAINTEGRACAOFUSION`) devolve itens vazios —
+    `_montar_payload_entrega_solta` já transforma isso num aviso
+    bloqueante ("Nenhuma entrega selecionada"), sem precisar de um 404
+    separado pra esse caso."""
+    detalhe = client.get_carga_detalhe(id_empresa, id_planilha)
+    if detalhe is None:
+        return None
+
+    itens_todos = client.get_itens_carga(id_empresa, id_planilha)
+    itens_do_pedido = [i for i in itens_todos if i.get("IDPLANILHADOCORI") == id_pedido_origem]
+    itens = filtrar_itens_selecionados(itens_do_pedido, itens_selecionados)
+
+    ids_clifor = {item.get("IDCLIFORENTREGA") or item.get("IDCLIFOR") for item in itens}
+    ids_clifor.discard(None)
+    clientes = {idc: client.get_cliente_fusion(idc) for idc in ids_clifor}
+
+    reenvio_id = registrar_reenvio_pedido(
+        conn, id_empresa, id_planilha, id_pedido_origem,
+        [i["NUMSEQUENCIA"] for i in itens], usuario,
+    )
+    sufixo_reenvio = f"{id_planilha}R{reenvio_id}"
+
+    payload_entregas_servico, avisos, avisos_bloqueantes = montar_payload_carga_reenvio_solto(
+        id_empresa, itens, clientes, sufixo_reenvio
+    )
+    return reenvio_id, payload_entregas_servico, avisos, avisos_bloqueantes, clientes
+
+
+def processar_reenvio_pedido_carga(
+    conn: sqlite3.Connection,
+    fusion_client: FusionClient | None,
+    id_empresa: int,
+    reenvio_id: int,
+    payload_entregas_servico: Sequence[Mapping[str, object]],
+    avisos: Sequence[str],
+    avisos_bloqueantes: Sequence[str],
+    *,
+    clientes_por_idclifor: Mapping[int, Mapping[str, object] | None] | None = None,
+    fusion_portal_client: FusionPortalClient | None = None,
+) -> dict:
+    """Chama o Fusion pro reenvio já preparado por
+    `preparar_reenvio_pedido_carga`, e grava o resultado na mesma linha de
+    `cargas_fusion_reenvios` que aquela função criou (`reenvio_id`). Sem
+    trava de "já enviado" — ao contrário de `processar_envio`/
+    `processar_envio_pre_carga`, cada reenvio é uma linha nova por
+    definição, então não existe um estado anterior pra conflitar com
+    (nunca precisa de `forcar`)."""
+    if avisos_bloqueantes:
+        motivo = "; ".join(avisos)
+        linha = _marcar_resultado_reenvio_pedido(
+            conn, reenvio_id, status="PENDENTE", motivo=motivo, avisos=avisos
+        )
+        return {"status": "pendente", "motivo": motivo, "avisos": list(avisos), "reenvio": linha}
+
+    if fusion_client is None:
+        linha = _marcar_resultado_reenvio_pedido(
+            conn, reenvio_id, status="PENDENTE", motivo="Fusion não configurado.", avisos=()
+        )
+        return {"status": "pendente", "motivo": "Fusion não configurado.", "avisos": [], "reenvio": linha}
+
+    if clientes_por_idclifor:
+        erro_sync = _sincronizar_clientes_pendentes(
+            conn, fusion_client, clientes_por_idclifor, id_empresa, fusion_portal_client=fusion_portal_client,
+        )
+        if erro_sync:
+            linha = _marcar_resultado_reenvio_pedido(
+                conn, reenvio_id, status="PENDENTE", motivo=erro_sync, avisos=()
+            )
+            return {"status": "pendente", "motivo": erro_sync, "avisos": [], "reenvio": linha}
+
+    try:
+        resultado = fusion_client.save_entrega_servico(list(payload_entregas_servico))
+    except FusionUnavailable:
+        linha = _marcar_resultado_reenvio_pedido(
+            conn, reenvio_id, status="PENDENTE", motivo="Fusion indisponível.", avisos=()
+        )
+        return {"status": "pendente", "motivo": "Fusion indisponível.", "avisos": [], "reenvio": linha}
+
+    sucesso, motivo = _resultado_indica_sucesso(resultado)
+    pedido_erp = payload_entregas_servico[0]["pedido_erp"] if payload_entregas_servico else None
+    if not sucesso:
+        linha = _marcar_resultado_reenvio_pedido(
+            conn, reenvio_id, status="PENDENTE", motivo=motivo, avisos=(), pedido_erp=pedido_erp,
+        )
+        return {"status": "pendente", "motivo": motivo, "avisos": [], "resultado": resultado, "reenvio": linha}
+
+    linha = _marcar_resultado_reenvio_pedido(
+        conn, reenvio_id, status="ENVIADA", motivo=None, avisos=(), pedido_erp=pedido_erp, enviado=True,
+    )
+    return {"status": "enviada", "resultado": resultado, "reenvio": linha}

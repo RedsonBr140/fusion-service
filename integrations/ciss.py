@@ -470,20 +470,49 @@ class CissClient:
         apareceu em lugar nenhum). Não é o mesmo conceito do `OBSERVACAO`
         de `RETIRADA_PRODUTOS` (nível da carga, usado no `obs` do
         `saveCarga`) — um pedido pode ter nota própria mesmo numa carga
-        sem observação nenhuma, e vice-versa."""
+        sem observação nenhuma, e vice-versa.
+
+        `PR.NUMSEQUENCIA` não é único por `(IDEMPRESA, IDPLANILHA)` — reseta
+        por pré-nota (`IDPLANILHADOCORI`), confirmado em produção (carga
+        `1_22263328`): duas linhas de `PRODUTO_RETIRADO` reais e
+        independentes, pré-notas `22261929` (pedido 624825) e `22261942`
+        (pedido 624841), ambas com `IDPRODUTO`/`IDSUBPRODUTO` 9397 e
+        `NUMSEQUENCIA 1`, só por coincidência de numeração. O `LEFT JOIN
+        PRODUTO_RETIRADO_NOTAS PRN` casava só por
+        `(IDEMPRESA, IDPLANILHA, IDPRODUTO, IDSUBPRODUTO, NUMSEQUENCIA)` —
+        sem `IDPLANILHADOCORI` na condição, as duas linhas de `PR` batiam
+        com as NOTAS uma da outra (produto cartesiano: 2 `PR` × 2 `PRN` =
+        4 linhas no resultado), cada `PR` saindo com a NF/cliente/pedido
+        errado coladas nela, e duas delas com `NUMSEQUENCIA` repetido
+        dentro do mesmo grupo de pedido (quebrava a key do React na
+        tela). `PRN.IDPLANILHADOCORI = PR.IDPLANILHADOCORI` na condição do
+        `JOIN` fecha a ambiguidade — cada `PR` só casa com a NOTA da sua
+        própria pré-nota. `OPN` usa `COALESCE(PRN.IDPLANILHADOCORI,
+        PR.IDPLANILHADOCORI)` por precaução (item sem NF resolvida ainda
+        cai pro valor de `PR`), mas depois do fix do `JOIN` os dois já são
+        iguais sempre que `PRN` casa. O `IDPLANILHADOCORI` devolvido na
+        linha segue o mesmo valor — é a chave de agrupamento que tanto a
+        tela (`agruparPorPedido`) quanto o backend
+        (`service.py::_agrupar_itens_por_pedido`, chave em
+        `item["IDPLANILHADOCORI"]`) usam pra decidir qual pedido vai pro
+        Fusion."""
         return self._fetch_all(
             "SELECT "
             "PR.NUMSEQUENCIA, "
-            "PR.IDPLANILHADOCORI, PR.NUMSEQUENCIAORIGEM, PR.IDSUBPRODUTO, "
+            "COALESCE(PRN.IDPLANILHADOCORI, PR.IDPLANILHADOCORI) AS IDPLANILHADOCORI, "
+            "PR.NUMSEQUENCIAORIGEM, PR.IDSUBPRODUTO, "
             "CAST(PR.QTDPRODUTO AS DOUBLE) AS QTDPRODUTO, "
             "OPN.IDORCAMENTO, ORC.OBSERVACAO AS ORCAMENTO_OBSERVACAO, "
-            "N.NUMNOTA, N.SERIENOTA, N.IDCLIFOR, "
-            "NES.IDOPERACAO, NES.IDCLIFORENTREGA, "
+            "COALESCE(N.NUMNOTA, N2.NUMNOTA) AS NUMNOTA, "
+            "COALESCE(N.SERIENOTA, N2.SERIENOTA) AS SERIENOTA, "
+            "COALESCE(N.IDCLIFOR, N2.IDCLIFOR) AS IDCLIFOR, "
+            "COALESCE(NES.IDOPERACAO, NES2.IDOPERACAO) AS IDOPERACAO, "
+            "COALESCE(NES.IDCLIFORENTREGA, NES2.IDCLIFORENTREGA) AS IDCLIFORENTREGA, "
             "CF_CLI.NOME AS NOME_CLIENTE, "
-            "CAST(EA.VALTOTLIQUIDO AS DOUBLE) AS VALTOTLIQUIDO, "
-            "CAST(EA.VALUNITBRUTO AS DOUBLE) AS VALUNITBRUTO, "
-            "CAST(EA.PESOBRUTO AS DOUBLE) AS PESOBRUTO, "
-            "EA.IDVENDEDOR, "
+            "CAST(COALESCE(EA.VALTOTLIQUIDO, EA2.VALTOTLIQUIDO) AS DOUBLE) AS VALTOTLIQUIDO, "
+            "CAST(COALESCE(EA.VALUNITBRUTO, EA2.VALUNITBRUTO) AS DOUBLE) AS VALUNITBRUTO, "
+            "CAST(COALESCE(EA.PESOBRUTO, EA2.PESOBRUTO) AS DOUBLE) AS PESOBRUTO, "
+            "COALESCE(EA.IDVENDEDOR, EA2.IDVENDEDOR) AS IDVENDEDOR, "
             "P.DESCRCOMPRODUTO, "
             "CAST(PG.LARGURA AS DOUBLE) AS LARGURA, "
             "CAST(PG.ALTURA AS DOUBLE) AS ALTURA, "
@@ -496,8 +525,10 @@ class CissClient:
             "  ON PRN.IDEMPRESA = PR.IDEMPRESA AND PRN.IDPLANILHA = PR.IDPLANILHA "
             " AND PRN.IDPRODUTO = PR.IDPRODUTO AND PRN.IDSUBPRODUTO = PR.IDSUBPRODUTO "
             " AND PRN.NUMSEQUENCIA = PR.NUMSEQUENCIA "
+            " AND PRN.IDPLANILHADOCORI = PR.IDPLANILHADOCORI "
             "LEFT JOIN ORCAMENTO_PRE_NOTA OPN "
-            "  ON OPN.IDEMPRESAPRENOTA = PR.IDEMPRESA AND OPN.IDPLANILHAPRENOTA = PR.IDPLANILHADOCORI "
+            "  ON OPN.IDEMPRESAPRENOTA = PR.IDEMPRESA "
+            " AND OPN.IDPLANILHAPRENOTA = COALESCE(PRN.IDPLANILHADOCORI, PR.IDPLANILHADOCORI) "
             "LEFT JOIN ORCAMENTO ORC ON ORC.IDORCAMENTO = OPN.IDORCAMENTO "
             "LEFT JOIN NOTAS N "
             "  ON N.IDPLANILHA = PRN.IDPLANILHANOTA AND N.IDEMPRESA = PRN.IDEMPRESANOTA "
@@ -506,10 +537,35 @@ class CissClient:
             "LEFT JOIN ESTOQUE_ANALITICO EA "
             "  ON EA.IDEMPRESA = PRN.IDEMPRESANOTA AND EA.IDPLANILHA = PRN.IDPLANILHANOTA "
             " AND EA.NUMSEQUENCIA = PRN.NUMSEQUENCIANOTA "
+            # Fallback pra pedido sem orçamento (IDORCAMENTO NULL): PRN
+            # nunca tem linha pra esse caso (confirmado em produção — 0 de
+            # 32276 pré-notas sem orçamento desde o corte de integração
+            # têm qualquer linha em PRODUTO_RETIRADO_NOTAS), então N/NES/EA
+            # acima saem sempre NULL e a entrega aparecia "sem orçamento,
+            # cliente não identificado, R$0,00" mesmo quando a NF real
+            # existe. A própria NOTAS/NOTAS_ENTRADA_SAIDA/ESTOQUE_ANALITICO
+            # têm uma linha com IDPLANILHA = PR.IDPLANILHADOCORI direto
+            # (não via PRN) pra esse caso — achado em produção (carga
+            # 1_22263328, pré-nota 22260586, NF 167089: "PREFEITURA
+            # MUNICIPAL DE TRIUNFO", valor 2387.28, confirmado contra a
+            # tela do ERP). `N2.SERIENOTA <> 'PDV'` é o guard: pedido
+            # *com* orçamento também tem uma linha de NOTAS nesse mesmo
+            # join direto, mas é um registro interno de PDV (NUMNOTA =
+            # IDPLANILHA, não a NF de verdade — que já vem corretamente
+            # por N/PRN) — sem o guard, o fallback substituiria a NF real
+            # já resolvida por esse registro interno errado.
+            "LEFT JOIN NOTAS N2 "
+            "  ON N2.IDEMPRESA = PR.IDEMPRESA AND N2.IDPLANILHA = PR.IDPLANILHADOCORI "
+            " AND N2.SERIENOTA <> 'PDV' "
+            "LEFT JOIN NOTAS_ENTRADA_SAIDA NES2 "
+            "  ON NES2.IDEMPRESA = PR.IDEMPRESA AND NES2.IDPLANILHA = PR.IDPLANILHADOCORI "
+            "LEFT JOIN ESTOQUE_ANALITICO EA2 "
+            "  ON EA2.IDEMPRESA = PR.IDEMPRESA AND EA2.IDPLANILHA = PR.IDPLANILHADOCORI "
+            " AND EA2.NUMSEQUENCIA = PR.NUMSEQUENCIA "
             "LEFT JOIN PRODUTO_GRADE PG ON PG.IDSUBPRODUTO = PR.IDSUBPRODUTO "
             "LEFT JOIN PRODUTO P ON P.IDPRODUTO = PG.IDPRODUTO "
             "LEFT JOIN CLIENTE_FORNECEDOR CF_CLI "
-            "  ON CF_CLI.IDCLIFOR = COALESCE(NES.IDCLIFORENTREGA, N.IDCLIFOR) "
+            "  ON CF_CLI.IDCLIFOR = COALESCE(NES.IDCLIFORENTREGA, N.IDCLIFOR, NES2.IDCLIFORENTREGA, N2.IDCLIFOR) "
             "WHERE PR.IDPLANILHA = ? AND (PR.IDEMPRESA = ? OR (PR.IDEMPRESABAIXAEST = ? "
             "AND NOT EXISTS (SELECT 1 FROM RETIRADA_PRODUTOS RP_OWN "
             "WHERE RP_OWN.IDEMPRESA = PR.IDEMPRESA AND RP_OWN.IDPLANILHA = PR.IDPLANILHA))) "

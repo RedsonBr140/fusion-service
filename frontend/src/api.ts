@@ -22,8 +22,10 @@ import type {
   PreCargaResumo,
   PreviewCargaFusion,
   PreviewPreCargaFusion,
+  ReenvioPedidoCargaFusion,
   ResultadoCicloManual,
   ResultadoEnvioCargaFusion,
+  ResultadoReenvioPedidoCargaFusion,
   SelecaoEnvioCargaFusion,
   SelecaoEnvioPreCargaFusion,
   VeiculoFusion,
@@ -193,6 +195,32 @@ export function marcarCargaFusionIntegrada(
   idPlanilha: number
 ): Promise<{ fila: ItemFilaFusion }> {
   return request(`/api/cargas/${idEmpresa}/${idPlanilha}/marcar-integrada`, { method: "POST" });
+}
+
+/** Reenvio manual avulso de um pedido dentro de uma carga já enviada —
+ * cross-docking. Só `saveEntregaServico` (`podeformarcarga: "S"`), nunca
+ * `saveCarga` de novo: fica disponível na tela "Formação de carga" do
+ * próprio Fusion pra um despachante formar a carga da perna seguinte.
+ * `idPedidoOrigem` é IDPLANILHADOCORI (a pré-nota), não IDORCAMENTO.
+ * Cada chamada é um reenvio novo, com `pedido_erp` próprio — nunca
+ * sobrescreve um reenvio anterior. */
+export function reenviarPedidoCargaFusionSolto(
+  idEmpresa: number,
+  idPlanilha: number,
+  idPedidoOrigem: number,
+  itens?: number[] | null
+): Promise<ResultadoReenvioPedidoCargaFusion> {
+  return request(
+    `/api/cargas/${idEmpresa}/${idPlanilha}/pedidos/${idPedidoOrigem}/reenviar-solta`,
+    { method: "POST", body: JSON.stringify({ itens: itens ?? undefined }) }
+  );
+}
+
+export function getReenviosCargaFusion(
+  idEmpresa: number,
+  idPlanilha: number
+): Promise<{ reenvios: ReenvioPedidoCargaFusion[] }> {
+  return request(`/api/cargas/${idEmpresa}/${idPlanilha}/reenvios`);
 }
 
 export function getFilaCargasFusion(todas = false): Promise<{ fila: ItemFilaFusion[] }> {
