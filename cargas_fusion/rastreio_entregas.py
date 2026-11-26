@@ -15,8 +15,14 @@ De onde vem cada coisa (confirmado em produção, 2026-11-26):
   direto do Fusion, sem mapeamento (decisão do negócio). O mesmo
   `detalheEntrega` dá a observação e a previsão atualizada.
 
-Fora do escopo por enquanto (decisão do negócio): `IDENTREGAFUSION`
-(nulo, mesmo o `detalheEntrega` trazendo um `id`), `IDDEVOLUCAO`/
+- **`IDENTREGAFUSION`** é a **sequência da entrega dentro do romaneio**
+  (`t12_ordemEntrega` do payload mais recente do romaneio — muda quando o
+  Fusion resequencia, `T10_ROMANEIO_ROTEIRIZADO`), não o `id` do
+  `detalheEntrega` (decisão do negócio, 2026-11-26). Não é único: dois
+  pedidos na mesma parada repetem a ordem (visto em produção, romaneios
+  816733 e 831957), e um pedido com mais de uma NF repete em cada linha.
+
+Fora do escopo por enquanto (decisão do negócio): `IDDEVOLUCAO`/
 `DESCRDEVOLUCAO` (eventos de entrega ficam pra depois).
 """
 
@@ -196,10 +202,11 @@ def montar_linhas(t10_id: int, nfs: list[dict], entrega: dict, detalhe: dict) ->
             "DATAPREVISTAENTREGAATUALIZADA": prevista_atualizada,
             "DATAREALENTREGA": r._data(entrega.get("t12_data_real_entrega")),
             "OBERSERVACAOENTREGA": observacao,
+            # Sequência da entrega no romaneio, não id do Fusion (ver topo).
+            "IDENTREGAFUSION": r._inteiro(entrega.get("t12_ordemEntrega")),
             # Fora do escopo por enquanto (decisão do negócio, 2026-11-26).
             "IDDEVOLUCAO": None,
             "DESCRDEVOLUCAO": None,
-            "IDENTREGAFUSION": None,
         }
         for nf in nfs
     ]

@@ -111,6 +111,7 @@ def _romaneio(conn, t10_id=816622, entregas=None, codigo_int=1, **extra):
         "ENTREGAS": entregas if entregas is not None else [{
             "t32_pedido_original": "616205_PC796273", "t43_codigo_filial_erp": "2", "t32_nf": "0",
             "t12_data_prevista_entrega": "2026-10-27 07:32:06", "t12_data_real_entrega": None,
+            "t12_ordemEntrega": "3",
         }],
     }
     item.update(extra)
@@ -149,7 +150,9 @@ def test_grava_uma_linha_por_nf_com_status_do_detalhe_entrega(conn):
     assert linha["DATAPREVISTAENTREGA"] == datetime(2026, 10, 27, 7, 32, 6)
     assert linha["DATAPREVISTAENTREGAATUALIZADA"] == datetime(2026, 10, 27, 7, 32)
     assert linha["OBERSERVACAOENTREGA"] == "LIGAR ANTES"
-    assert linha["IDENTREGAFUSION"] is None and linha["IDDEVOLUCAO"] is None
+    assert linha["IDENTREGAFUSION"] == 3  # sequência no romaneio (t12_ordemEntrega)
+    assert escrita.linhas[1]["IDENTREGAFUSION"] == 3  # mesma entrega, outra NF
+    assert linha["IDDEVOLUCAO"] is None
     assert ciss.chamadas[0][0] == "orcamento" and ciss.chamadas[0][2] == {"id_precarga": 796273}
 
 

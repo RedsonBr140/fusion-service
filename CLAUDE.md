@@ -678,9 +678,14 @@ linha em `CARGAS_FUSION_TRACK` antes). Uma linha por NF por romaneio
   observação e previsão atualizada (`dd/mm/aaaa hh:mm`) e
   `fusion_romaneio_id` — entrega que hoje está em outro romaneio vira
   `OUTRO_ROMANEIO`, não grava. Pedido inexistente responde texto puro.
-- **`IDENTREGAFUSION`, `IDDEVOLUCAO`, `DESCRDEVOLUCAO`: sempre nulos**
-  por enquanto (decisão do negócio — eventos de entrega ficam pra depois),
-  mesmo o `detalheEntrega` trazendo `id`/`motivo_devolucao_*`.
+- **`IDENTREGAFUSION` é a sequência da entrega no romaneio**
+  (`t12_ordemEntrega`, do payload mais recente do romaneio — muda quando o
+  Fusion resequencia), não o `id` do `detalheEntrega` (decisão do negócio,
+  2026-11-26). Não é único: pedidos na mesma parada repetem a ordem
+  (romaneios 816733 e 831957), e pedido com várias NFs repete por linha.
+- **`IDDEVOLUCAO`, `DESCRDEVOLUCAO`: sempre nulos** por enquanto
+  (eventos de entrega ficam pra depois), mesmo o `detalheEntrega` trazendo
+  `motivo_devolucao_*`.
 - **NF (`IDEMPRESA`/`IDPLANILHA`/`NUMNOTA`) nunca vem do `t32_nf`** do
   Fusion: é `"0"` em toda pré-carga (o pedido foi antes de faturar) e, no
   formato nativo, repete o orçamento. Resolvida no CISS pelo formato do
