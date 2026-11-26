@@ -336,3 +336,31 @@ def test_falha_num_item_desfaz_o_evento_tambem(monkeypatch):
     with pytest.raises(CissDbUnavailable):
         ciss_escrita.CissEscritaClient(_Db()).gravar_evento_fusion_track(*_linhas_para_gravar())
     assert driver.commits == 0 and driver.rollbacks == 1
+
+
+def test_fora_do_escopo_volta_quando_o_romaneio_entra_em_cargas(conn):
+    escrita = EscritaFalsa()
+    _processar(conn, FusionFalso([[_evento(100, t15_dataHora="2026-04-16 11:41:29")]]), escrita)
+    assert _status(conn) == {100: "FORA_DO_ESCOPO"}
+
+    _romaneio(conn)  # o romaneio entrou em CARGAS_FUSION_TRACK depois
+    _processar(conn, FusionFalso(), escrita)
+
+    assert _status(conn) == {100: "GRAVADO"} and len(escrita.gravados) == 1
+
+
+def test_pedido_que_saiu_do_romaneio_usa_a_ultima_sequencia_que_teve(conn):
+    """Visto em produção: entrega adiada sai do romaneio; o payload mais
+    novo não lista mais o pedido, mas o evento dele é deste romaneio."""
+    _romaneio(conn, codigo_int=1)  # 616205_PC796273 na sequência 2
+    rastreio._registrar_recebidos(conn, [{
+        "CODIGO_INT": "2", "TIPO_INT": "T10_ROMANEIO_ROTEIRIZADO", "t10_id": str(ROMANEIO),
+        "ENTREGAS": [{"t32_pedido_original": "616300_22160000", "t12_ordemEntrega": "1"}],
+    }])
+    conn.execute("UPDATE cargas_fusion_int_erp SET status = 'INTERNALIZADO' WHERE codigo_int = 2")
+    conn.commit()
+    escrita = EscritaFalsa()
+
+    _processar(conn, FusionFalso([[_evento(100, tipo="8", pedido="616205_PC796273")]]), escrita)
+
+    assert escrita.gravados[0][0]["IDENTREGAFUSION"] == 2

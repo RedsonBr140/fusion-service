@@ -100,17 +100,42 @@ def _ordem_da_entrega(payload_romaneio: dict, pedido: str | None) -> int | None:
     return None
 
 
+def _ordens_historicas(conn: sqlite3.Connection, t10_id: int) -> dict[str, int]:
+    """`pedido → t12_ordemEntrega` de **todos** os payloads já gravados do
+    romaneio, o mais novo vencendo. Pra evento de entrega que saiu do
+    romaneio depois (adiada, remanejada — visto em produção: 111 eventos
+    no primeiro dreno), que o payload mais recente já não lista."""
+    ordens: dict[str, int] = {}
+    for (payload,) in conn.execute(
+        "SELECT payload FROM cargas_fusion_int_erp WHERE t10_id = ? AND status IN ('INTERNALIZADO', 'SUPERADO') "
+        "ORDER BY codigo_int",
+        (t10_id,),
+    ):
+        for entrega in json.loads(payload).get("ENTREGAS") or []:
+            pedido = (entrega.get("t32_pedido_original") or "").strip()
+            ordem = _r()._inteiro(entrega.get("t12_ordemEntrega"))
+            if pedido and ordem is not None:
+                ordens[pedido] = ordem
+    return ordens
+
+
 def _motivo(evento: dict) -> int | None:
     motivo = _r()._inteiro(evento.get("t15_motivo_devol_reent_id"))
     return motivo or None  # "0" = sem motivo
 
 
-def mapear_evento(evento: dict, payload_romaneio: dict) -> dict:
+def mapear_evento(evento: dict, payload_romaneio: dict, ordens_historicas: dict[str, int] | None = None) -> dict:
+    """Sequência da entrega: payload mais recente do romaneio; se o pedido
+    não está mais nele, a última sequência que ele teve (`_ordens_historicas`)."""
     r = _r()
+    pedido = (evento.get("t32_seq_pedido_erp") or "").strip()
+    ordem = _ordem_da_entrega(payload_romaneio, pedido)
+    if ordem is None and pedido and ordens_historicas:
+        ordem = ordens_historicas.get(pedido)
     return {
         "IDEVENTOFUSION": r._inteiro(evento.get("t15_id")),
         "IDCARGAFUSION": r._inteiro(evento.get("t15_romaneio_id")),
-        "IDENTREGAFUSION": _ordem_da_entrega(payload_romaneio, evento.get("t32_seq_pedido_erp")),
+        "IDENTREGAFUSION": ordem,
         "DESCRICAO": r._texto(evento.get("t15_descricao"), 45),
         "KMATUAL": r._decimal(evento.get("t15_kmAtual"), 7),
         "LATITUDE": r._decimal(evento.get("t15_latitude"), 7),
@@ -187,6 +212,8 @@ def _processar_evento(conn, fusion, escrita, linha, payloads, agora, avisos) -> 
         return "FORA_DO_ESCOPO"
 
     linha_evento = mapear_evento(evento, dado["payload"])
+    if linha_evento["IDENTREGAFUSION"] is None and (evento.get("t32_seq_pedido_erp") or "").strip():
+        linha_evento = mapear_evento(evento, dado["payload"], _ordens_historicas(conn, linha["t10_id"]))
     itens_brutos = json.loads(linha["itens_devolvidos"]) if linha["itens_devolvidos"] else None
     try:
         if _motivo(evento) and itens_brutos is None:
@@ -230,6 +257,19 @@ def processar_eventos(conn, fusion, escrita, alertas, avisos, *, agora: datetime
     contagem["recebidos"] = recebidos
 
     payloads = _r().rastreio_entregas._ultimos_payloads_por_romaneio(conn)
+    # Escopo = romaneio em CARGAS_FUSION_TRACK *agora*: um romaneio que
+    # entrou depois (ex. resequenciado no Fusion) traz de volta os eventos
+    # que já tinham ficado FORA_DO_ESCOPO.
+    if payloads:
+        with conn:
+            ids = list(payloads)
+            for i in range(0, len(ids), 500):
+                lote = ids[i : i + 500]
+                conn.execute(
+                    f"UPDATE cargas_fusion_evento SET status = 'RECEBIDO', atualizado_em = CURRENT_TIMESTAMP "
+                    f"WHERE status = 'FORA_DO_ESCOPO' AND t10_id IN ({','.join('?' * len(lote))})",
+                    lote,
+                )
     marcas = ",".join("?" * len(_SITUACOES_A_PROCESSAR))
     fila = conn.execute(
         f"SELECT * FROM cargas_fusion_evento WHERE status IN ({marcas}) ORDER BY t15_id",

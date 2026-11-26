@@ -42,6 +42,11 @@ _SOAP_ENCODING_NS = "http://schemas.xmlsoap.org/soap/encoding/"
 # saveCarga pode levar até 100 itens numa chamada só (limite documentado);
 # a leitura precisa de folga sobre o tempo de login/senha do CISS.
 CALL_TIMEOUT = (5.0, 30.0)
+# Leitura destrutiva (getIntErp, obtemEventosPorID): o Fusion avança o
+# cursor ao montar a resposta — desistir de esperar é perder o lote. Visto
+# em produção (2026-11-26): obtemEventosPorID passou de 30s no meio da
+# drenagem. Espera bem mais antes de abandonar.
+CALL_TIMEOUT_DESTRUTIVO = (5.0, 180.0)
 
 _ENVELOPE = (
     '<?xml version="1.0" encoding="UTF-8"?>'
@@ -134,7 +139,12 @@ def _partes_sem_credenciais(partes: dict[str, str]) -> dict[str, str]:
 
 
 def _chamar(
-    api_url: str, metodo: str, partes: dict[str, str], *, resparam_vazio_ok: bool = False
+    api_url: str,
+    metodo: str,
+    partes: dict[str, str],
+    *,
+    resparam_vazio_ok: bool = False,
+    timeout: tuple[float, float] = CALL_TIMEOUT,
 ) -> object:
     """POST do envelope SOAP e devolve o conteúdo de `resParam` já
     decodificado do JSON. Loga o restante de `partes` (ex.: `array_dados`,
@@ -158,7 +168,7 @@ def _chamar(
                 "Content-Type": "text/xml; charset=utf-8",
                 "SOAPAction": f'"urn:{metodo}"',
             },
-            timeout=CALL_TIMEOUT,
+            timeout=timeout,
         )
     except requests.RequestException as exc:
         logger.warning("Fusion inalcançável (%s) chamando %s", type(exc).__name__, metodo)
@@ -302,6 +312,7 @@ class FusionClient:
                 "limite_padrao": str(max(1, min(limite, 50))),
             },
             resparam_vazio_ok=True,
+            timeout=CALL_TIMEOUT_DESTRUTIVO,
         )
         if resultado in ("", None, [], {}) or (isinstance(resultado, str) and not resultado.strip()):
             return []
@@ -332,6 +343,7 @@ class FusionClient:
                 "idInicial": str(id_inicial or 0),
             },
             resparam_vazio_ok=True,
+            timeout=CALL_TIMEOUT_DESTRUTIVO,
         )
         if resultado in ("", None, [], {}) or (isinstance(resultado, str) and not resultado.strip()):
             return []
