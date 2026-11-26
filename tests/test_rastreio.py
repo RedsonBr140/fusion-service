@@ -76,6 +76,9 @@ class FusionFalso:
         self.confirmados = []
         self.cargas = []
 
+    def obtem_eventos(self, id_inicial=None):
+        return []
+
     def get_int_erp(self, limite=50):
         self.chamadas_get += 1
         if self._erro_get is not None:
@@ -127,7 +130,7 @@ def test_merge_gerado_passa_na_guarda():
         "SELECT * FROM DBA.CARGAS_FUSION_TRACK",
         "DELETE FROM DBA.CARGAS_FUSION_TRACK",
         "UPDATE DBA.RETIRADA_PRODUTOS SET OBSERVACAO = 'x'",
-        "INSERT INTO DBA.EVENTOS_FUSION_TRACK (IDCARGAFUSION) VALUES (1)",
+        "INSERT INTO DBA.NOTAS_ORCAMENTO_FUSION_TRACK (IDEMPRESA) VALUES (1)",
         "MERGE INTO DBA.CARGAS_FUSION_TRACK T USING X S ON 1=1 WHEN MATCHED THEN DELETE",
         "UPDATE DBA.CARGAS_FUSION_TRACK SET DESTINO = 'x'; DROP TABLE DBA.CLIENTE",
         "UPDATE CARGAS_FUSION_TRACK SET DESTINO = 'x'",

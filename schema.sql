@@ -203,3 +203,25 @@ CREATE TABLE IF NOT EXISTS cargas_fusion_entrega_track (
     atualizado_em   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (t10_id, pedido_erp)
 );
+
+-- Eventos do app do motorista (obtemEventosPorID → DBA.EVENTOS_FUSION_TRACK).
+-- obtemEventosPorID é destrutivo: esta tabela é o único registro do que foi
+-- consumido, inclusive o que fica fora do escopo (romaneio fora de
+-- CARGAS_FUSION_TRACK). Ver cargas_fusion/rastreio_eventos.py.
+CREATE TABLE IF NOT EXISTS cargas_fusion_evento (
+    t15_id            INTEGER PRIMARY KEY,
+    t10_id            INTEGER,
+    tipo              INTEGER,
+    payload           TEXT NOT NULL,
+    itens_devolvidos  TEXT,
+    itens_gravados    INTEGER,
+    status            TEXT NOT NULL DEFAULT 'RECEBIDO'
+                      CHECK (status IN ('RECEBIDO', 'GRAVADO', 'AGUARDANDO_ROMANEIO', 'FORA_DO_ESCOPO', 'ERRO')),
+    erro              TEXT,
+    tentativas        INTEGER NOT NULL DEFAULT 0,
+    recebido_em       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    gravado_em        TEXT,
+    atualizado_em     TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_cargas_fusion_evento_status ON cargas_fusion_evento (status);
+CREATE INDEX IF NOT EXISTS idx_cargas_fusion_evento_t10 ON cargas_fusion_evento (t10_id);

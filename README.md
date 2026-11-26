@@ -150,10 +150,11 @@ Tudo documentado em `.env.example`. Os grupos que importam:
   ver seção acima e `CLAUDE.md`.
 - `RASTREIO_INT_ERP_ATIVO` (default `false`, exige `REDIS_URL`) — liga o
   rastreio (`getIntErp` → `DBA.CARGAS_FUSION_TRACK`/`ENTREGAS_FUSION_TRACK`
-  → `setIntErp`, única escrita no CISS DB2) **só pelo botão "Executar
+  → `setIntErp`, e `obtemEventosPorID` → `DBA.EVENTOS_FUSION_TRACK`/
+  `ITENS_DEVOLVIDOS_FUSION_TRACK` — única escrita no CISS DB2) **só pelo botão "Executar
   ciclo agora"**. `RASTREIO_INT_ERP_AUTOMATICO` (default `false`) agenda o
   ciclo a cada `RASTREIO_INT_ERP_INTERVALO_SEGUNDOS` (default `120`) —
-  separado de propósito: ligar o rastreio nunca começa a escrever sozinho. `getIntErp` é destrutivo: nunca ligar em dev apontando
+  separado de propósito: ligar o rastreio nunca começa a escrever sozinho. `getIntErp` e `obtemEventosPorID` são destrutivos: nunca ligar em dev apontando
   pro Fusion de produção sem querer consumir a fila de verdade.
 - `DISCORD_WEBHOOK_URL` — canal de **erros** (só falha, embed vermelho).
   `DISCORD_WEBHOOK_ATIVIDADE_URL` — canal de **atividade**: toda ação da
@@ -271,7 +272,7 @@ docker-compose.dev.yml   infra de dev pra testar o lock Redis do ciclo automáti
 k8s/                      manifests de produção, incl. redis.yaml (lock) e db2-driver.yaml (clidriver IBM)
 integrations/
   ciss.py                 leitura CISS DB2, reduzida aos métodos usados aqui
-  ciss_escrita.py         única escrita no CISS DB2 — allow-list de tabela (DBA.CARGAS_FUSION_TRACK, DBA.ENTREGAS_FUSION_TRACK)
+  ciss_escrita.py         única escrita no CISS DB2 — allow-list de tabela (DBA.{CARGAS,ENTREGAS,EVENTOS,ITENS_DEVOLVIDOS}_FUSION_TRACK)
   ciss_auth.py            login CISS (authenticate()) — isola o libciss, alpha e instável
   fusion.py                webservice SOAP do Fusion (saveCarga, saveEntregaServico, sendMotoristas, ...)
   fusion_portal.py         portal web do Fusion (busca/sugestão de motorista, checagem de cliente)
@@ -287,6 +288,7 @@ cargas_fusion/
   auto_envio.py              ciclo automático de envio de pedido solto (lock Redis, janela, corte)
   rastreio.py                ciclo getIntErp → DBA.CARGAS_FUSION_TRACK → setIntErp
   rastreio_entregas.py       entregas do ciclo → DBA.ENTREGAS_FUSION_TRACK (NF resolvida no CISS por formato de pedido)
+  rastreio_eventos.py        eventos do app (obtemEventosPorID) → DBA.EVENTOS_FUSION_TRACK + ITENS_DEVOLVIDOS
   routes.py                  rotas HTTP, usa os clients acima
 frontend/
   src/api.ts                 toda chamada HTTP, token em localStorage

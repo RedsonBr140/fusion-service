@@ -12,7 +12,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useExecutarRastreioAgora, useItemRastreio, useRastreio } from "@/tools/cargas_fusion/useRastreio";
-import type { EntregaRastreio, ItemRastreio, ResultadoCicloRastreio, StatusRastreio } from "@/types";
+import type { EntregaRastreio, EventoRastreio, ItemRastreio, ResultadoCicloRastreio, StatusRastreio } from "@/types";
 
 const STATUS: StatusRastreio[] = ["RECEBIDO", "INTERNALIZADO", "SUPERADO", "IGNORADO", "ERRO"];
 
@@ -39,6 +39,14 @@ function descreverCiclo(r: ResultadoCicloRastreio): string {
           .map(([s, n]) => `${n} ${s.toLowerCase()}`)
           .join(", ") || "nada a fazer"}` +
         (r.entregas.restantes ? ` (${r.entregas.restantes} pra próximos ciclos)` : "")
+      : "") +
+    (r.eventos
+      ? ` · eventos: ${r.eventos.recebidos ?? 0} consumido(s) do Fusion` +
+        (Object.entries(r.eventos)
+          .filter(([s]) => s !== "restantes" && s !== "recebidos")
+          .map(([s, n]) => `, ${n} ${s.toLowerCase()}`)
+          .join("")) +
+        (r.eventos.restantes ? ` (${r.eventos.restantes} pra próximos ciclos)` : "")
       : "") +
     (r.erro_coleta ? ` · ${r.erro_coleta}` : "")
   );
@@ -114,6 +122,45 @@ function TabelaEntregas({ entregas }: { entregas: EntregaRastreio[] }) {
                 {e.erro && e.situacao !== "GRAVADA" ? ` — ${e.erro}` : ""}
               </td>
               <td className="py-1 pr-3">{formatarData(e.atualizado_em)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function TabelaEventos({ eventos }: { eventos: EventoRastreio[] }) {
+  if (eventos.length === 0) {
+    return <p className="text-sm text-muted-foreground">Nenhum evento recebido ainda pra este romaneio.</p>;
+  }
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="border-b border-border text-left text-muted-foreground">
+            <th scope="col" className="py-1 pr-3 font-medium">Quando</th>
+            <th scope="col" className="py-1 pr-3 font-medium">Evento</th>
+            <th scope="col" className="py-1 pr-3 font-medium">Pedido</th>
+            <th scope="col" className="py-1 pr-3 font-medium">Motivo</th>
+            <th scope="col" className="py-1 pr-3 font-medium">Itens devolvidos</th>
+            <th scope="col" className="py-1 pr-3 font-medium">Situação</th>
+          </tr>
+        </thead>
+        <tbody>
+          {eventos.map((e) => (
+            <tr key={e.t15_id} className="border-b border-border/50 align-top">
+              <td className="py-1 pr-3 whitespace-nowrap">{formatarData(e.data_hora)}</td>
+              <td className="py-1 pr-3">
+                <span className="font-mono text-muted-foreground">{e.tipo ?? "?"}</span> {e.descricao ?? "—"}
+              </td>
+              <td className="py-1 pr-3 font-mono">{e.pedido_erp ?? "—"}</td>
+              <td className="py-1 pr-3">{e.motivo ?? "—"}</td>
+              <td className="py-1 pr-3 font-mono">{e.itens_gravados ?? "—"}</td>
+              <td className={`py-1 pr-3 ${e.status === "ERRO" ? "text-destructive-text" : ""}`} title={e.erro ?? undefined}>
+                {e.status}
+                {e.erro ? ` — ${e.erro}` : ""}
+              </td>
             </tr>
           ))}
         </tbody>
@@ -216,6 +263,10 @@ function DetalheItem({ id, onFechar }: { id: number; onFechar: () => void }) {
             <span className="text-sm font-medium">Entregas → ENTREGAS_FUSION_TRACK</span>
             <TabelaEntregas entregas={detalhe.data.entregas} />
           </div>
+          <div className="flex flex-col gap-1">
+            <span className="text-sm font-medium">Eventos → EVENTOS_FUSION_TRACK</span>
+            <TabelaEventos eventos={detalhe.data.eventos ?? []} />
+          </div>
           <div>
             <Button type="button" size="xs" variant="outline" onClick={() => setMostrarPayload((v) => !v)}>
               {mostrarPayload ? "Esconder" : "Ver"} payload cru do Fusion
@@ -307,6 +358,14 @@ export function RastreioSection() {
             <span className="text-xs text-muted-foreground">
               · Entregas:{" "}
               {Object.entries(dados.entregas_contagem)
+                .map(([s, n]) => `${n} ${s.toLowerCase()}`)
+                .join(", ")}
+            </span>
+          )}
+          {Object.keys(dados.eventos_contagem ?? {}).length > 0 && (
+            <span className="text-xs text-muted-foreground">
+              · Eventos:{" "}
+              {Object.entries(dados.eventos_contagem)
                 .map(([s, n]) => `${n} ${s.toLowerCase()}`)
                 .join(", ")}
             </span>

@@ -15,7 +15,8 @@ funções.
   guardado em `validate_readonly_query` — esse client nunca ganha caminho
   de escrita. Escrita só em `integrations/ciss_escrita.py`, SQL fixo por
   método e allow-list de tabela em `validate_escrita_permitida` (hoje só
-  `DBA.CARGAS_FUSION_TRACK` e `DBA.ENTREGAS_FUSION_TRACK`). A conexão é como `DBA` (decisão do
+  `DBA.CARGAS_FUSION_TRACK`, `DBA.ENTREGAS_FUSION_TRACK`,
+  `DBA.EVENTOS_FUSION_TRACK` e `DBA.ITENS_DEVOLVIDOS_FUSION_TRACK`). A conexão é como `DBA` (decisão do
   negócio), então a permissão do DB2 não protege nada — a allow-list é a
   única defesa, e ampliá-la é decisão de negócio, não de código. O
   `saveCarga` do Fusion é escrita em outro sistema (SOAP), não no CISS.
@@ -659,9 +660,8 @@ no sqlite, então dá pra reprocessar depois.
 Limitação de fonte: `getIntErp` só dispara na montagem/resequenciamento
 do romaneio — `KMREALIZADO`/`DATAINICIO`/`DATATERMINO` e status ao longo
 da viagem quase sempre chegam vazios por ele. Manter isso atualizado
-seria `detalheCarga`/`obtemEventos` (leitura não destrutiva), fora do
-escopo por enquanto. Demais `*_FUSION_TRACK` (eventos, devoluções) fora
-do escopo.
+seria `detalheCarga` (leitura) ou os eventos (abaixo). `NOTAS_ORCAMENTO_FUSION_TRACK`
+fora do escopo.
 
 ### `ENTREGAS_FUSION_TRACK` — entregas do romaneio, NF sempre do CISS
 
@@ -715,6 +715,51 @@ linha em `CARGAS_FUSION_TRACK` antes). Uma linha por NF por romaneio
   TTL do lock em produção); prioridade: nunca processadas → reatualização
   → retentativa de `SEM_NF`/`ERRO` (por último, pra pré-carga não
   faturada nunca matar de fome quem está em viagem).
+
+### `EVENTOS_FUSION_TRACK` / `ITENS_DEVOLVIDOS_FUSION_TRACK` — eventos do app do motorista
+
+`cargas_fusion/rastreio_eventos.py`, última etapa do mesmo ciclo manual
+(depois de romaneios e entregas). Fonte: `obtemEventosPorID`.
+
+- **`obtemEventosPorID` é destrutivo — testado em produção
+  (2026-11-26)**: a mesma chamada (`idInicial=0`) repetida devolve os 50
+  *seguintes*. O cursor é do Fusion: `idInicial` só funciona como piso
+  (acima do cursor → `[]`), nunca rebobina, e
+  `eventosLidosOuNao(flag_lido='N', ids)` responde `OK` mas **não** traz
+  os eventos de volta. Mesma regra do `getIntErp`: grava cru em
+  `cargas_fusion_evento` antes de tudo; não existe confirmação. Os 150
+  eventos consumidos nos testes (`t15_id` 52915544–53475486, abril/maio)
+  foram importados crus. A fila começava em 2026-04-16 — o integrador
+  nativo parou de ler eventos antes de parar o resto.
+- **Escopo (decisão do negócio)**: só evento de romaneio que já está em
+  `CARGAS_FUSION_TRACK` (o DB2 exige: `FK_EVENTOSFUSION_CARGAFUSION`).
+  O resto fica só cru, `FORA_DO_ESCOPO`. Romaneio desconhecido com evento
+  recente espera `HORAS_ESPERA_ROMANEIO` (48h, `AGUARDANDO_ROMANEIO`) —
+  o `getIntErp` dele pode chegar depois. Todo tipo de evento do romaneio
+  entra (chegada, entrega, adiamento, canhoto, foto, início/fim...).
+- Mapeamento: `IDEVENTOFUSION = t15_id`, `IDCARGAFUSION = t15_romaneio_id`,
+  descrição/km/lat/long/`dataHora`/`obsMotorista`/`data_registro` diretos,
+  `IDMOTIVODEVOLUCAO`/`DESCRDEVOLUCAO` = `t15_motivo_devol_reent_id`
+  (`"0"` = sem motivo → nulo) / `descricao_motivo_devol_reent`.
+  **`IDENTREGAFUSION` = sequência da entrega** (mesma regra de
+  `ENTREGAS_FUSION_TRACK`): `t32_seq_pedido_erp` → `t12_ordemEntrega` no
+  payload mais recente do romaneio; nulo em evento sem entrega. O
+  `t15_entrega_id` do evento é id interno do Fusion — não usado.
+  `t15_link_foto` não tem coluna (fica só no cru).
+- **Itens devolvidos**: `obtemEventosItensDevolvidos(idEvento)` — só no
+  WSDL, fora da doc; leitura pura (repetir devolve o mesmo). Chamado uma
+  vez por evento com motivo, resposta crua guardada. Numa devolução
+  parcial ele lista o pedido inteiro: item com `qtd_devolvido` nulo/zero
+  não foi devolvido e não entra. `IDSUBPRODUTO` = último segmento de
+  `codigo_erp_produto` (nós mandamos `IDSUBPRODUTO` no
+  `saveEntregaServico`; o integrador nativo mandava
+  `IDPRODUTO@IDSUBPRODUTO`), agregado por subproduto (a PK não aceita
+  repetição). Sem sequência da entrega os itens não entram (PK exige) —
+  aviso no Discord. Evento + itens numa transação só
+  (`CissEscritaClient.gravar_evento_fusion_track`).
+- Até 40 chamadas (2000 eventos) consumidas e 200 gravações no DB2 por
+  ciclo; ordem de `t15_id`; `ERRO` retenta todo ciclo, alerta só na
+  primeira falha.
 
 DB2: marcador `?` sem tipo não é aceito em `MERGE ... USING (VALUES ...)`
 (SQL0418N) — todo parâmetro vai com `CAST` explícito

@@ -129,6 +129,22 @@ def _get_int_erp(args, kwargs, resultado) -> tuple[str, Campos] | None:
     ]
 
 
+def _obtem_eventos(args, kwargs, resultado) -> tuple[str, Campos] | None:
+    if not resultado:
+        return None  # fila vazia: nada consumido, não é ação
+    tipos: dict[str, int] = {}
+    for evento in resultado:
+        tipo = f"{evento.get('t15_tipo')} {evento.get('t15_descricao') or ''}".strip()
+        tipos[tipo] = tipos.get(tipo, 0) + 1
+    ids = [e.get("t15_id") for e in resultado]
+    return "📥 Fusion · obtemEventosPorID (fila consumida)", [
+        ("Eventos", len(resultado), True),
+        ("t15_id", f"`{ids[0]}` … `{ids[-1]}`", True),
+        ("Tipos", " · ".join(f"{t}: {n}" for t, n in sorted(tipos.items()))[:1000], False),
+        ("Romaneios", _lista(sorted({e.get("t15_romaneio_id") for e in resultado if e.get("t15_romaneio_id")}), 20), False),
+    ]
+
+
 def _set_int_erp(args, kwargs, resultado) -> tuple[str, Campos]:
     int_id = args[0] if args else kwargs.get("int_id")
     carga = kwargs.get("carga") if "carga" in kwargs else (args[2] if len(args) > 2 else None)
@@ -163,6 +179,22 @@ def _upsert_entrega_track(args, kwargs, resultado) -> tuple[str, Campos]:
     ]
 
 
+def _gravar_evento_track(args, kwargs, resultado) -> tuple[str, Campos]:
+    evento = args[0] if args else kwargs.get("evento") or {}
+    itens = (args[1] if len(args) > 1 else kwargs.get("itens")) or []
+    campos: Campos = [
+        ("Evento", f"`{evento.get('IDEVENTOFUSION')}` {evento.get('DESCRICAO') or ''}", False),
+        ("Romaneio", f"`{evento.get('IDCARGAFUSION')}`", True),
+        ("Entrega (sequência)", evento.get("IDENTREGAFUSION"), True),
+        ("Quando", evento.get("DATAHORA"), True),
+    ]
+    if evento.get("DESCRDEVOLUCAO"):
+        campos.append(("Motivo", evento.get("DESCRDEVOLUCAO"), True))
+    if itens:
+        campos.append(("Itens devolvidos", _lista(f"{i.get('IDSUBPRODUTO')}×{i.get('QTDDEVOLVIDO')}" for i in itens), False))
+    return "🛰️ CISS · EVENTOS_FUSION_TRACK", campos
+
+
 FORMATADORES: dict[str, Callable] = {
     "save_carga": _save_carga,
     "save_entrega_servico": _save_entrega_servico,
@@ -171,8 +203,10 @@ FORMATADORES: dict[str, Callable] = {
     "send_veiculos": _send_veiculos,
     "get_int_erp": _get_int_erp,
     "set_int_erp": _set_int_erp,
+    "obtem_eventos": _obtem_eventos,
     "upsert_carga_fusion_track": _upsert_carga_track,
     "upsert_entrega_fusion_track": _upsert_entrega_track,
+    "gravar_evento_fusion_track": _gravar_evento_track,
 }
 
 

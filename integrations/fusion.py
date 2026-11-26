@@ -312,6 +312,58 @@ class FusionClient:
         logger.warning("getIntErp devolveu formato inesperado: %r", resultado)
         raise FusionUnavailable
 
+    def obtem_eventos(self, id_inicial: int | None = None) -> list[dict]:
+        """Próximos (até 50) eventos do app do motorista — `obtemEventosPorID`.
+
+        **Leitura destrutiva**, confirmado em produção (2026-11-26): o
+        Fusion guarda um cursor por integração; a mesma chamada repetida
+        devolve os 50 *seguintes*. `idInicial` só funciona como piso
+        (valor acima do cursor → `[]`), nunca rebobina, e
+        `eventosLidosOuNao(flag_lido='N')` também não traz de volta —
+        testado. Mesma regra do `get_int_erp`: quem chama persiste antes
+        de qualquer outra coisa; o corpo cru fica no log de `_chamar`.
+        Fila vazia → `[]`; formato inesperado → `FusionUnavailable`."""
+        resultado = _chamar(
+            self._config.api_url,
+            "obtemEventosPorID",
+            {
+                "login": self._config.login,
+                "senha": self._config.senha,
+                "idInicial": str(id_inicial or 0),
+            },
+            resparam_vazio_ok=True,
+        )
+        if resultado in ("", None, [], {}) or (isinstance(resultado, str) and not resultado.strip()):
+            return []
+        if isinstance(resultado, dict) and "t15_id" in resultado:
+            resultado = [resultado]
+        if isinstance(resultado, list) and all(isinstance(e, dict) and e.get("t15_id") for e in resultado):
+            return resultado
+        logger.warning("obtemEventosPorID devolveu formato inesperado: %r", resultado)
+        raise FusionUnavailable
+
+    def obtem_itens_devolvidos(self, id_evento: str) -> list[dict]:
+        """Itens de um evento de devolução — `obtemEventosItensDevolvidos`
+        (fora da doc, só no WSDL). Leitura pura: repetir devolve o mesmo.
+        Resposta `[{"ENTREGA": {...}, "ITENS_DEVOLVIDOS": [...]}]`; cada
+        item: `codigo_erp_produto` (`IDSUBPRODUTO`, ou `IDPRODUTO@IDSUBPRODUTO`
+        no integrador nativo), `qtd_original`, `qtd_devolvido` (nulo = item
+        não devolvido, numa devolução parcial), `id_motivo_devolucao`,
+        `motivo_devolucao`. Devolve só a lista de itens."""
+        resultado = _chamar(
+            self._config.api_url,
+            "obtemEventosItensDevolvidos",
+            {"login": self._config.login, "senha": self._config.senha, "idEvento": str(id_evento)},
+            resparam_vazio_ok=True,
+        )
+        if resultado in ("", None, [], {}):
+            return []
+        blocos = resultado if isinstance(resultado, list) else [resultado]
+        if not all(isinstance(b, dict) for b in blocos):
+            logger.warning("obtemEventosItensDevolvidos devolveu formato inesperado: %r", resultado)
+            raise FusionUnavailable
+        return [item for b in blocos for item in (b.get("ITENS_DEVOLVIDOS") or []) if isinstance(item, dict)]
+
     def detalhe_entrega(self, pedido_erp: str) -> dict | None:
         """Estado atual de uma entrega pelo código do pedido (leitura, não
         consome nada). `status` vem inteiro como string (`"1"`, `"7"`),

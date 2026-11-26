@@ -268,3 +268,38 @@ def test_set_int_erp_manda_carga_quando_informada():
     responses.add(responses.POST, API_URL, body=_resposta_resparam("OK"), status=200)
     _client().set_int_erp("587221", "Internalizado", carga="816609")
     assert ">816609</carga>" in responses.calls[0].request.body.decode("utf-8")
+
+
+@responses.activate
+def test_obtem_eventos_manda_id_inicial_e_devolve_lista():
+    dado = [{"t15_id": "53475272", "t15_tipo": "7", "t15_romaneio_id": "816622"}]
+    responses.add(responses.POST, API_URL, body=_resposta_resparam(escape(json.dumps(dado))), status=200)
+
+    assert _client().obtem_eventos(53475271) == dado
+    corpo = responses.calls[0].request.body.decode("utf-8")
+    assert ">53475271</idInicial>" in corpo
+    assert "urn:obtemEventosPorID" in responses.calls[0].request.headers["SOAPAction"]
+
+
+@responses.activate
+def test_obtem_eventos_fila_vazia():
+    responses.add(responses.POST, API_URL, body=_resposta_resparam(escape("[]")), status=200)
+    assert _client().obtem_eventos(999999999) == []
+
+
+@pytest.mark.parametrize("corpo", ['{"msg": "login invalido"}', "Erro qualquer", '[{"x": 1}]'])
+@responses.activate
+def test_obtem_eventos_formato_inesperado_levanta(corpo):
+    responses.add(responses.POST, API_URL, body=_resposta_resparam(escape(corpo)), status=200)
+    with pytest.raises(FusionUnavailable):
+        _client().obtem_eventos()
+
+
+@responses.activate
+def test_obtem_itens_devolvidos_devolve_so_os_itens():
+    dado = [{"ENTREGA": {"t15_id": "53294700"}, "ITENS_DEVOLVIDOS": [
+        {"codigo_erp_produto": "135793@135793", "qtd_original": "1", "qtd_devolvido": "1"}]}]
+    responses.add(responses.POST, API_URL, body=_resposta_resparam(escape(json.dumps(dado))), status=200)
+
+    assert _client().obtem_itens_devolvidos("53294700") == dado[0]["ITENS_DEVOLVIDOS"]
+    assert ">53294700</idEvento>" in responses.calls[0].request.body.decode("utf-8")

@@ -3,7 +3,8 @@
 Até 2026-11 o CISS era somente leitura sem exceção. Passou a existir uma
 exceção deliberada e estreita: as tabelas de rastreio que o próprio CISS
 mantém para a Fusion (`DBA.*_FUSION_TRACK`), populadas a partir do
-`getIntErp` (ver `cargas_fusion/rastreio.py`). Todo o resto do CISS
+`getIntErp` e do `obtemEventosPorID` (ver `cargas_fusion/rastreio.py` e
+`cargas_fusion/rastreio_eventos.py`). Todo o resto do CISS
 continua somente leitura — `integrations/ciss.py::CissClient` não ganhou
 nenhum caminho de escrita, e nunca deve ganhar.
 
@@ -32,7 +33,14 @@ logger = logging.getLogger(__name__)
 
 # Ampliar isto é decisão de negócio, não de código — ver CLAUDE.md
 # ("Regras que não se negociam").
-TABELAS_ESCRITA_PERMITIDAS = frozenset({"DBA.CARGAS_FUSION_TRACK", "DBA.ENTREGAS_FUSION_TRACK"})
+TABELAS_ESCRITA_PERMITIDAS = frozenset(
+    {
+        "DBA.CARGAS_FUSION_TRACK",
+        "DBA.ENTREGAS_FUSION_TRACK",
+        "DBA.EVENTOS_FUSION_TRACK",
+        "DBA.ITENS_DEVOLVIDOS_FUSION_TRACK",
+    }
+)
 
 _VERBOS_PROIBIDOS_ESCRITA = frozenset(
     {
@@ -165,6 +173,66 @@ def _sql_merge_entregas_fusion_track() -> str:
 
 SQL_MERGE_ENTREGAS_FUSION_TRACK = _sql_merge_entregas_fusion_track()
 
+# PK = IDEVENTOFUSION (`t15_id`); FK_EVENTOSFUSION_CARGAFUSION exige o
+# romaneio em CARGAS_FUSION_TRACK antes.
+COLUNAS_EVENTOS_FUSION_TRACK: tuple[tuple[str, str], ...] = (
+    ("IDEVENTOFUSION", "INTEGER"),
+    ("IDCARGAFUSION", "INTEGER"),
+    ("IDENTREGAFUSION", "INTEGER"),
+    ("DESCRICAO", "VARCHAR(45)"),
+    ("KMATUAL", "DECIMAL(18,7)"),
+    ("LATITUDE", "DECIMAL(18,7)"),
+    ("LONGITUDE", "DECIMAL(18,7)"),
+    ("DATAHORA", "TIMESTAMP"),
+    ("OBSMOTORISTA", "VARCHAR(2000)"),
+    ("DATAREGISTRO", "TIMESTAMP"),
+    ("IDMOTIVODEVOLUCAO", "INTEGER"),
+    ("DESCRDEVOLUCAO", "VARCHAR(45)"),
+)
+
+# PK = (IDEVENTOFUSION, IDENTREGAFUSION, IDSUBPRODUTO); FK pro evento.
+COLUNAS_ITENS_DEVOLVIDOS_FUSION_TRACK: tuple[tuple[str, str], ...] = (
+    ("IDEVENTOFUSION", "INTEGER"),
+    ("IDENTREGAFUSION", "INTEGER"),
+    ("IDSUBPRODUTO", "INTEGER"),
+    ("QTDORIGINAL", "DECIMAL(18,7)"),
+    ("QTDDEVOLVIDO", "DECIMAL(18,7)"),
+    ("IDMOTIVO", "INTEGER"),
+    ("MOTIVODEVOLUCAO", "VARCHAR(200)"),
+)
+
+
+def _sql_merge(tabela: str, colunas: tuple[tuple[str, str], ...], chave: tuple[str, ...]) -> str:
+    nomes = [nome for nome, _ in colunas]
+    valores = ", ".join(f"CAST(? AS {tipo})" for _, tipo in colunas)
+    atualiza = ", ".join(f"T.{nome} = S.{nome}" for nome in nomes if nome not in chave)
+    on = " AND ".join(f"T.{nome} = S.{nome}" for nome in chave)
+    return (
+        f"MERGE INTO {tabela} T "
+        f"USING (VALUES ({valores})) AS S ({', '.join(nomes)}) "
+        f"ON {on} "
+        f"WHEN MATCHED THEN UPDATE SET {atualiza} "
+        f"WHEN NOT MATCHED THEN INSERT ({', '.join(nomes)}) "
+        f"VALUES ({', '.join('S.' + nome for nome in nomes)})"
+    )
+
+
+SQL_MERGE_EVENTOS_FUSION_TRACK = _sql_merge(
+    "DBA.EVENTOS_FUSION_TRACK", COLUNAS_EVENTOS_FUSION_TRACK, ("IDEVENTOFUSION",)
+)
+SQL_MERGE_ITENS_DEVOLVIDOS_FUSION_TRACK = _sql_merge(
+    "DBA.ITENS_DEVOLVIDOS_FUSION_TRACK",
+    COLUNAS_ITENS_DEVOLVIDOS_FUSION_TRACK,
+    ("IDEVENTOFUSION", "IDENTREGAFUSION", "IDSUBPRODUTO"),
+)
+
+
+def _params(linha: dict[str, object], colunas: tuple[tuple[str, str], ...]) -> list[object]:
+    faltando = [nome for nome, _ in colunas if nome not in linha]
+    if faltando:
+        raise ValueError(f"Linha sem as colunas: {', '.join(faltando)}")
+    return [linha[nome] for nome, _ in colunas]
+
 
 class CissEscritaClient:
     """Uma conexão por escrita, com commit explícito (pyodbc abre em
@@ -192,8 +260,26 @@ class CissEscritaClient:
         params = [linha[nome] for nome, _ in COLUNAS_ENTREGAS_FUSION_TRACK]
         self._executar(SQL_MERGE_ENTREGAS_FUSION_TRACK, params)
 
+    def gravar_evento_fusion_track(self, evento: dict[str, object], itens: Sequence[dict[str, object]] = ()) -> None:
+        """Evento (upsert por `IDEVENTOFUSION`) + itens devolvidos dele
+        (upsert pela PK), **numa transação só** — nunca evento gravado com
+        metade dos itens."""
+        comandos = [(SQL_MERGE_EVENTOS_FUSION_TRACK, _params(evento, COLUNAS_EVENTOS_FUSION_TRACK))]
+        comandos += [
+            (SQL_MERGE_ITENS_DEVOLVIDOS_FUSION_TRACK, _params(item, COLUNAS_ITENS_DEVOLVIDOS_FUSION_TRACK))
+            for item in itens
+        ]
+        self._executar_lote(comandos)
+
     def _executar(self, sql: str, params: Sequence[object] = ()) -> None:
-        validate_escrita_permitida(sql)
+        self._executar_lote([(sql, params)])
+
+    def _executar_lote(self, comandos: Sequence[tuple[str, Sequence[object]]]) -> None:
+        """Todos os comandos numa conexão/transação: commit só no fim,
+        rollback de tudo em qualquer falha. Cada SQL passa pela allow-list
+        antes de abrir conexão."""
+        for sql, _ in comandos:
+            validate_escrita_permitida(sql)
 
         driver = _load_driver()
         try:
@@ -209,7 +295,8 @@ class CissEscritaClient:
         cursor = None
         try:
             cursor = conexao.cursor()
-            cursor.execute(sql, params)
+            for sql, params in comandos:
+                cursor.execute(sql, params)
             conexao.commit()
         except driver.Error as exc:
             try:

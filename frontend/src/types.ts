@@ -413,6 +413,20 @@ export interface EntregaRastreio {
   atualizado_em: string | null;
 }
 
+export type StatusEventoRastreio = "RECEBIDO" | "GRAVADO" | "AGUARDANDO_ROMANEIO" | "FORA_DO_ESCOPO" | "ERRO";
+
+export interface EventoRastreio {
+  t15_id: number;
+  tipo: number | null;
+  descricao: string | null;
+  data_hora: string | null;
+  pedido_erp: string | null;
+  motivo: string | null;
+  status: StatusEventoRastreio;
+  erro: string | null;
+  itens_gravados: number | null;
+}
+
 export interface ListagemRastreio {
   ativo: boolean;
   automatico: boolean;
@@ -420,6 +434,7 @@ export interface ListagemRastreio {
   contagem: Partial<Record<StatusRastreio, number>>;
   nao_confirmadas: number;
   entregas_contagem: Partial<Record<SituacaoEntregaRastreio, number>>;
+  eventos_contagem: Partial<Record<StatusEventoRastreio, number>>;
   itens: ItemRastreio[];
 }
 
@@ -438,6 +453,7 @@ export interface DetalheRastreio {
   linha_ciss: Record<string, unknown> | null;
   erro_ciss: string | null;
   entregas: EntregaRastreio[];
+  eventos: EventoRastreio[];
 }
 
 export interface ResultadoCicloRastreio {
@@ -448,6 +464,7 @@ export interface ResultadoCicloRastreio {
   confirmadas?: number;
   falhas_confirmacao?: number;
   entregas?: (Partial<Record<SituacaoEntregaRastreio, number>> & { restantes?: number }) | null;
+  eventos?: (Partial<Record<StatusEventoRastreio, number>> & { recebidos?: number; restantes?: number }) | null;
   erro_coleta?: string | null;
   duracao_ms?: number;
 }

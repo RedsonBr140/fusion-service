@@ -37,7 +37,7 @@ from integrations.ciss import CissDbError
 from integrations.ciss_escrita import CissEscritaClient
 from integrations.fusion import FusionClient, FusionError
 
-from . import rastreio_entregas, service
+from . import rastreio_entregas, rastreio_eventos, service
 
 logger = logging.getLogger(__name__)
 
@@ -371,11 +371,16 @@ def _resumir_ciclo(resultado: dict) -> None:
     """Canal de atividade: resumo do ciclo, só quando algo aconteceu."""
     processadas = resultado.get("processadas") or {}
     entregas = {k: v for k, v in (resultado.get("entregas") or {}).items() if k != "restantes" and v}
-    if not (resultado.get("recebidas") or processadas or resultado.get("confirmadas") or entregas):
+    eventos = {
+        k: v for k, v in (resultado.get("eventos") or {}).items() if k not in ("recebidos", "restantes") and v
+    }
+    recebidos_eventos = (resultado.get("eventos") or {}).get("recebidos", 0)
+    if not (resultado.get("recebidas") or processadas or resultado.get("confirmadas") or entregas or eventos
+            or recebidos_eventos):
         return
     descricao = lambda d: " · ".join(f"{k.lower()}: **{v}**" for k, v in sorted(d.items())) or "—"  # noqa: E731
     discord.atividade(
-        "🔁 Ciclo de rastreio getIntErp",
+        "🔁 Ciclo de rastreio (getIntErp + eventos)",
         cor=discord.COR_INFO,
         campos=[
             ("Recebidas do getIntErp", resultado.get("recebidas", 0), True),
@@ -384,6 +389,9 @@ def _resumir_ciclo(resultado: dict) -> None:
             ("Romaneios", descricao(processadas), False),
             ("Entregas", descricao(entregas), False),
             ("Entregas pra próximos ciclos", (resultado.get("entregas") or {}).get("restantes", 0), True),
+            ("Eventos consumidos (obtemEventos)", recebidos_eventos, True),
+            ("Eventos", descricao(eventos), False),
+            ("Eventos pra próximos ciclos", (resultado.get("eventos") or {}).get("restantes", 0), True),
             ("Duração", f"{resultado.get('duracao_ms', 0) / 1000:.1f}s", True),
         ],
     )
@@ -473,6 +481,10 @@ def executar_ciclo(
                 conn, ciss_client, fusion_client, escrita_client, alertas, avisos
             )
 
+        # Eventos depois de tudo: mesma FK (romaneio em CARGAS_FUSION_TRACK),
+        # e a sequência da entrega vem do payload do romaneio.
+        eventos = rastreio_eventos.processar_eventos(conn, fusion_client, escrita_client, alertas, avisos)
+
         if erro_coleta:
             logger.warning("Rastreio getIntErp: %s", erro_coleta)
             alertas.insert(0, erro_coleta)
@@ -485,6 +497,7 @@ def executar_ciclo(
             "confirmadas": confirmadas,
             "falhas_confirmacao": falhas_confirmacao,
             "entregas": entregas,
+            "eventos": eventos,
             "erro_coleta": erro_coleta,
             "duracao_ms": int((time.monotonic() - inicio) * 1000),
         }
@@ -533,6 +546,9 @@ def detalhe(conn: sqlite3.Connection, id_: int) -> dict | None:
         "entregas": (
             rastreio_entregas.listar_do_romaneio(conn, linha["t10_id"]) if linha["t10_id"] is not None else []
         ),
+        "eventos": (
+            rastreio_eventos.listar_do_romaneio(conn, linha["t10_id"]) if linha["t10_id"] is not None else []
+        ),
     }
 
 
@@ -560,6 +576,7 @@ def listar(conn: sqlite3.Connection, *, status: str | None = None, limite: int =
         "contagem": contagem,
         "nao_confirmadas": nao_confirmadas,
         "entregas_contagem": rastreio_entregas.resumo(conn),
+        "eventos_contagem": rastreio_eventos.resumo(conn),
         "itens": [
             {
                 "id": linha["id"],
