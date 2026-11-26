@@ -156,3 +156,50 @@ CREATE TABLE IF NOT EXISTS cargas_fusion_auto_envio_execucoes (
     breakdown      TEXT NOT NULL DEFAULT '{}',
     itens_lentos   TEXT NOT NULL DEFAULT '[]'
 );
+
+-- Caixa de entrada do rastreio Fusion → CISS (cargas_fusion/rastreio.py).
+-- `getIntErp` é destrutivo (a pendência sai da fila do Fusion ao ser
+-- devolvida), então tudo que ele devolve é gravado cru aqui ANTES do
+-- upsert em DBA.CARGAS_FUSION_TRACK — é o único registro do que foi
+-- consumido. `status`: RECEBIDO → INTERNALIZADO (gravado no CISS) |
+-- SUPERADO (pendência mais nova do mesmo romaneio já gravada) | IGNORADO
+-- (tipo que o ERP não processa) | ERRO (retentado todo ciclo).
+-- `confirmado_em`: setIntErp aceito — independente de `status`.
+CREATE TABLE IF NOT EXISTS cargas_fusion_int_erp (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    codigo_int        INTEGER UNIQUE,
+    tipo_int          TEXT,
+    t10_id            INTEGER,
+    payload           TEXT NOT NULL,
+    status            TEXT NOT NULL DEFAULT 'RECEBIDO'
+                      CHECK (status IN ('RECEBIDO', 'INTERNALIZADO', 'SUPERADO', 'IGNORADO', 'ERRO')),
+    erro              TEXT,
+    tentativas        INTEGER NOT NULL DEFAULT 0,
+    confirmado_em     TEXT,
+    confirmacao_erro  TEXT,
+    recebido_em       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at        TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_cargas_fusion_int_erp_t10 ON cargas_fusion_int_erp (t10_id, codigo_int);
+
+-- Entregas do rastreio (cargas_fusion/rastreio_entregas.py): uma linha por
+-- (romaneio, pedido) do ENTREGAS[] do getIntErp. `nfs` é o cache JSON das
+-- NFs resolvidas no CISS (NF não muda depois de emitida). `situacao`:
+-- PENDENTE (nunca processada) | GRAVADA (em DBA.ENTREGAS_FUSION_TRACK,
+-- reatualizada enquanto o romaneio não termina) | SEM_NF (ainda sem NF no
+-- CISS, retenta) | OUTRO_ROMANEIO (detalheEntrega aponta outro romaneio,
+-- não grava) | IGNORADA (formato de pedido desconhecido) | ERRO (retenta).
+CREATE TABLE IF NOT EXISTS cargas_fusion_entrega_track (
+    t10_id          INTEGER NOT NULL,
+    pedido_erp      TEXT NOT NULL,
+    formato         TEXT,
+    nfs             TEXT,
+    status_entrega  INTEGER,
+    situacao        TEXT NOT NULL DEFAULT 'PENDENTE'
+                    CHECK (situacao IN ('PENDENTE', 'GRAVADA', 'SEM_NF', 'OUTRO_ROMANEIO', 'IGNORADA', 'ERRO')),
+    erro            TEXT,
+    tentativas      INTEGER NOT NULL DEFAULT 0,
+    gravada_em      TEXT,
+    atualizado_em   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (t10_id, pedido_erp)
+);

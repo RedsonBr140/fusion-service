@@ -148,8 +148,18 @@ Tudo documentado em `.env.example`. Os grupos que importam:
   `AUTO_ENVIO_PRE_CARGA_CORTE` (ISO `AAAA-MM-DDTHH:MM:SS`, default fixo
   no código pra produção) — ciclo automático de envio de pedido solto,
   ver seção acima e `CLAUDE.md`.
-- `DISCORD_WEBHOOK_URL` — opcional. Sem ele, falha do ciclo automático e
-  pré-carga multi-pedido ignorada só vão pro log, nunca pro Discord.
+- `RASTREIO_INT_ERP_ATIVO` (default `false`, exige `REDIS_URL`) — liga o
+  rastreio (`getIntErp` → `DBA.CARGAS_FUSION_TRACK`/`ENTREGAS_FUSION_TRACK`
+  → `setIntErp`, única escrita no CISS DB2) **só pelo botão "Executar
+  ciclo agora"**. `RASTREIO_INT_ERP_AUTOMATICO` (default `false`) agenda o
+  ciclo a cada `RASTREIO_INT_ERP_INTERVALO_SEGUNDOS` (default `120`) —
+  separado de propósito: ligar o rastreio nunca começa a escrever sozinho. `getIntErp` é destrutivo: nunca ligar em dev apontando
+  pro Fusion de produção sem querer consumir a fila de verdade.
+- `DISCORD_WEBHOOK_URL` — canal de **erros** (só falha, embed vermelho).
+  `DISCORD_WEBHOOK_ATIVIDADE_URL` — canal de **atividade**: toda ação da
+  integração (escrita no Fusion e no CISS, `getIntErp` consumido,
+  `setIntErp`, resumo de ciclo, pausa/retomada). Ambos opcionais — sem
+  eles, só log. Ver `CLAUDE.md`, "Discord: dois canais".
 - `DATABASE_PATH`, `PORT`.
 
 Qualquer grupo "todas ou nenhuma" ausente faz o recurso correspondente
@@ -233,6 +243,9 @@ POST   /api/pre-cargas/envio-automatico/retomar
 POST   /api/pre-cargas/envio-automatico/executar-agora               tick manual, mesmo lock do scheduler — 409 se AUTO_ENVIO_PRE_CARGA_ATIVO=false
 GET    /api/pre-cargas/envio-automatico/execucoes                    histórico de ciclos (duração por etapa, pré-cargas mais lentas)
 
+GET    /api/rastreio/int-erp                                         caixa de entrada do getIntErp (status, contagem, não confirmadas)
+POST   /api/rastreio/int-erp/executar-agora                          tick manual do rastreio, mesmo lock — 409 se RASTREIO_INT_ERP_ATIVO=false
+
 GET    /api/metricas                                                 enviadas/pendentes/falhas por dia, multi-pedido ignorado
 
 GET    /api/fila                                                     (legado)
@@ -258,10 +271,12 @@ docker-compose.dev.yml   infra de dev pra testar o lock Redis do ciclo automáti
 k8s/                      manifests de produção, incl. redis.yaml (lock) e db2-driver.yaml (clidriver IBM)
 integrations/
   ciss.py                 leitura CISS DB2, reduzida aos métodos usados aqui
+  ciss_escrita.py         única escrita no CISS DB2 — allow-list de tabela (DBA.CARGAS_FUSION_TRACK, DBA.ENTREGAS_FUSION_TRACK)
   ciss_auth.py            login CISS (authenticate()) — isola o libciss, alpha e instável
   fusion.py                webservice SOAP do Fusion (saveCarga, saveEntregaServico, sendMotoristas, ...)
   fusion_portal.py         portal web do Fusion (busca/sugestão de motorista, checagem de cliente)
-  discord.py               notificação de falha do ciclo automático / pré-carga multi-pedido
+  discord.py               embeds + fila (rate limit) pros dois canais: erros e atividade
+  auditoria.py             proxy dos clients de escrita → toda ação no canal de atividade
 auth/
   tokens.py               esquema de token de sessão (HMAC, sem estado)
   service.py               login, allow-list
@@ -270,6 +285,8 @@ auth/
 cargas_fusion/
   service.py                lógica de negócio: cadastro local, montagem de payload, fila de envio
   auto_envio.py              ciclo automático de envio de pedido solto (lock Redis, janela, corte)
+  rastreio.py                ciclo getIntErp → DBA.CARGAS_FUSION_TRACK → setIntErp
+  rastreio_entregas.py       entregas do ciclo → DBA.ENTREGAS_FUSION_TRACK (NF resolvida no CISS por formato de pedido)
   routes.py                  rotas HTTP, usa os clients acima
 frontend/
   src/api.ts                 toda chamada HTTP, token em localStorage
@@ -281,10 +298,12 @@ frontend/
 
 ## Regras que não se negociam
 
-- **CISS DB2 é somente leitura.** ODBC com `pyodbc`, só `SELECT`,
-  guardado em `validate_readonly_query`. A exceção é o Fusion: `saveCarga`
-  e companhia são escrita, mas é escrita em outro sistema via SOAP, não no
-  CISS DB2 — a regra de read-only nunca falou sobre o Fusion.
+- **CISS DB2 é somente leitura, com uma exceção estreita.** Leitura via
+  `CissClient`, só `SELECT`, guardado em `validate_readonly_query`. A
+  única escrita é `integrations/ciss_escrita.py`, restrita por allow-list
+  de tabela (hoje `DBA.CARGAS_FUSION_TRACK` e `DBA.ENTREGAS_FUSION_TRACK`) em
+  `validate_escrita_permitida`. `saveCarga` e companhia são escrita em
+  outro sistema (SOAP do Fusion), não no CISS DB2.
 - **A allow-list local é consultada antes do CISS.** Usuário fora dela
   nunca gera tráfego pro CISS.
 - **Nenhum log registra senha, token ou header `Authorization`** — nem do

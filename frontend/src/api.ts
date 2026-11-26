@@ -13,7 +13,10 @@ import type {
   CandidatoPessoaCiss,
   CargaResumo,
   EmpresaEstoque,
+  DetalheRastreio,
   EnvioAutomaticoEstado,
+  ListagemRastreio,
+  ResultadoCicloRastreio,
   ExecucaoEnvioAutomatico,
   ItemFilaFusion,
   ItemFilaPreCargaFusion,
@@ -380,4 +383,20 @@ export function getCandidatosAjudanteFusion(
 
 export function sincronizarAjudanteFusion(id: number): Promise<{ ajudante: AjudanteFusion }> {
   return request(`/api/ajudantes/${id}/sincronizar`, { method: "POST" });
+}
+
+// --- Rastreio Fusion → CISS (getIntErp → DBA.CARGAS_FUSION_TRACK) -------
+
+export function getRastreio(status?: string): Promise<ListagemRastreio> {
+  const query = status ? `?status=${encodeURIComponent(status)}` : "";
+  return request(`/api/rastreio/int-erp${query}`);
+}
+
+export function getItemRastreio(id: number): Promise<DetalheRastreio> {
+  return request(`/api/rastreio/int-erp/${id}`);
+}
+
+/** DESTRUTIVO do lado do Fusion: getIntErp tira da fila o que devolve. */
+export function executarRastreioAgora(): Promise<ResultadoCicloRastreio> {
+  return request("/api/rastreio/int-erp/executar-agora", { method: "POST" });
 }

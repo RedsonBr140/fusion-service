@@ -195,3 +195,76 @@ def test_nenhuma_credencial_aparece_na_excecao():
 
     assert "senha-fusion" not in str(erro.value)
     assert "usuario-fusion" not in str(erro.value)
+
+
+# --- getIntErp / setIntErp ---------------------------------------------
+
+
+def _resposta_resparam_vazio() -> str:
+    return (
+        '<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/" '
+        'xmlns:ns1="urn:myOutputNamespace" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">'
+        '<SOAP-ENV:Body><ns1:getIntErpResponse><resParam xsi:type="xsd:string"/>'
+        "</ns1:getIntErpResponse></SOAP-ENV:Body></SOAP-ENV:Envelope>"
+    )
+
+
+@responses.activate
+def test_get_int_erp_manda_limite_e_devolve_lista():
+    dado = [{"CODIGO_INT": "1330221", "TIPO_INT": "T10_ROMANEIO_ROTEIRIZADO", "t10_id": "823636"}]
+    responses.add(responses.POST, API_URL, body=_resposta_resparam(escape(json.dumps(dado))), status=200)
+
+    resultado = _client().get_int_erp(50)
+
+    assert resultado == dado
+    corpo = responses.calls[0].request.body.decode("utf-8")
+    assert "<limite_padrao" in corpo and ">50</limite_padrao>" in corpo
+    assert "urn:getIntErp" in responses.calls[0].request.headers["SOAPAction"]
+
+
+@responses.activate
+def test_get_int_erp_fila_vazia_com_resparam_vazio():
+    responses.add(responses.POST, API_URL, body=_resposta_resparam_vazio(), status=200)
+    assert _client().get_int_erp() == []
+
+
+@pytest.mark.parametrize("corpo", ["[]", "", json.dumps("")])
+@responses.activate
+def test_get_int_erp_fila_vazia_em_json(corpo):
+    responses.add(responses.POST, API_URL, body=_resposta_resparam(escape(corpo)), status=200)
+    assert _client().get_int_erp() == []
+
+
+@responses.activate
+def test_get_int_erp_objeto_unico_vira_lista():
+    dado = {"CODIGO_INT": "1", "TIPO_INT": "T10_ROMANEIO_MONTAGEM_CARGA"}
+    responses.add(responses.POST, API_URL, body=_resposta_resparam(escape(json.dumps(dado))), status=200)
+    assert _client().get_int_erp() == [dado]
+
+
+@pytest.mark.parametrize("corpo", ['{"msg": "login invalido"}', "Erro qualquer"])
+@responses.activate
+def test_get_int_erp_formato_inesperado_levanta(corpo):
+    responses.add(responses.POST, API_URL, body=_resposta_resparam(escape(corpo)), status=200)
+    with pytest.raises(FusionUnavailable):
+        _client().get_int_erp()
+
+
+@responses.activate
+def test_set_int_erp_manda_int_id_e_nao_loga_senha(caplog):
+    responses.add(responses.POST, API_URL, body=_resposta_resparam("OK"), status=200)
+
+    with caplog.at_level("INFO"):
+        resultado = _client().set_int_erp("587221", "Internalizado")
+
+    assert resultado == "OK"
+    corpo = responses.calls[0].request.body.decode("utf-8")
+    assert ">587221</int_id>" in corpo and ">Internalizado</retorno_carga>" in corpo
+    assert "senha-fusion" not in caplog.text
+
+
+@responses.activate
+def test_set_int_erp_manda_carga_quando_informada():
+    responses.add(responses.POST, API_URL, body=_resposta_resparam("OK"), status=200)
+    _client().set_int_erp("587221", "Internalizado", carga="816609")
+    assert ">816609</carga>" in responses.calls[0].request.body.decode("utf-8")

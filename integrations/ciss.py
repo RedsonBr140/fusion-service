@@ -796,6 +796,87 @@ class CissClient:
             (padrao, padrao, limite),
         )
 
+    # Pré-nota → NF real pelo mesmo caminho de `get_itens_carga`
+    # (`PRODUTO_RETIRADO_NOTAS` → `NOTAS`), excluindo o registro interno de
+    # PDV (`SERIENOTA = 'PDV'`, `NUMNOTA` = a própria pré-nota) — ver
+    # CLAUDE.md, "NF/cliente/valor de um pedido sem orçamento".
+    _SQL_NF_VIA_RETIRADA = (
+        "SELECT DISTINCT N.IDEMPRESA, N.IDPLANILHA, N.NUMNOTA "
+        "FROM PRODUTO_RETIRADO PR "
+        "JOIN PRODUTO_RETIRADO_NOTAS PRN ON PRN.IDEMPRESA = PR.IDEMPRESA AND PRN.IDPLANILHA = PR.IDPLANILHA "
+        " AND PRN.IDPRODUTO = PR.IDPRODUTO AND PRN.IDSUBPRODUTO = PR.IDSUBPRODUTO "
+        " AND PRN.NUMSEQUENCIA = PR.NUMSEQUENCIA "
+        "JOIN NOTAS N ON N.IDPLANILHA = PRN.IDPLANILHANOTA AND N.IDEMPRESA = PRN.IDEMPRESANOTA "
+    )
+
+    def get_nfs_por_orcamento(
+        self,
+        id_orcamento: int,
+        *,
+        id_planilha_carga: int | None = None,
+        id_precarga: int | None = None,
+    ) -> list[dict[str, object]]:
+        """NFs reais de um pedido (`IDORCAMENTO`) — `ORCAMENTO_PRE_NOTA` →
+        pré-nota → retirada → NF. Um orçamento pode ter sido entregue em
+        mais de uma carga (redespacho), então quem sabe a carga restringe:
+        `id_planilha_carga` (pedido de carga real, `{orc}_{id_planilha}`)
+        ou `id_precarga` (pedido de pré-carga, `{orc}_PC{id}`, via
+        `PRE_CARGA_PROD.IDPLANILHARETIRADA` — vazio enquanto a pré-carga
+        não virou carga no CISS)."""
+        sql = (
+            self._SQL_NF_VIA_RETIRADA
+            + "JOIN ORCAMENTO_PRE_NOTA OPN ON OPN.IDEMPRESAPRENOTA = PR.IDEMPRESA "
+            "AND OPN.IDPLANILHAPRENOTA = PR.IDPLANILHADOCORI "
+            "WHERE OPN.IDORCAMENTO = ? AND N.SERIENOTA <> 'PDV' "
+        )
+        params: list[object] = [id_orcamento]
+        if id_planilha_carga is not None:
+            sql += "AND PR.IDPLANILHA = ? "
+            params.append(id_planilha_carga)
+        if id_precarga is not None:
+            sql += (
+                "AND PR.IDPLANILHA IN (SELECT PCP.IDPLANILHARETIRADA FROM PRE_CARGA_PROD PCP "
+                "WHERE PCP.IDPRECARGA = ?) "
+            )
+            params.append(id_precarga)
+        return self._fetch_all(sql + "ORDER BY N.IDEMPRESA, N.IDPLANILHA", params)
+
+    def get_nfs_por_pre_nota_retirada(self, id_empresa: int, id_pre_nota: int) -> list[dict[str, object]]:
+        """NFs reais de uma pré-nota pelo caminho da retirada — formato do
+        integrador nativo (`{pré-nota}@{empresa}@x@y`)."""
+        return self._fetch_all(
+            self._SQL_NF_VIA_RETIRADA
+            + "WHERE PR.IDEMPRESA = ? AND PR.IDPLANILHADOCORI = ? AND N.SERIENOTA <> 'PDV' "
+            "ORDER BY N.IDEMPRESA, N.IDPLANILHA",
+            (id_empresa, id_pre_nota),
+        )
+
+    def get_nfs_por_pre_nota_direta(self, id_empresa: int, id_pre_nota: int) -> list[dict[str, object]]:
+        """NF de um pedido **sem orçamento** (`PN{pré-nota}_...`): nesse
+        caso `PRODUTO_RETIRADO_NOTAS` nunca tem linha, e a NF mora em
+        `NOTAS.IDPLANILHA = pré-nota` direto (CLAUDE.md). `IDEMPRESA` é
+        obrigatório — IDPLANILHA colide entre empresas."""
+        return self._fetch_all(
+            "SELECT N.IDEMPRESA, N.IDPLANILHA, N.NUMNOTA FROM NOTAS N "
+            "WHERE N.IDEMPRESA = ? AND N.IDPLANILHA = ? AND N.SERIENOTA <> 'PDV'",
+            (id_empresa, id_pre_nota),
+        )
+
+    def get_carga_fusion_track(self, id_carga_fusion: int) -> dict[str, object] | None:
+        """Linha de `DBA.CARGAS_FUSION_TRACK` como está no CISS — leitura
+        de conferência do que `integrations/ciss_escrita.py` gravou (tela de
+        rastreio). CLOB vira VARCHAR pra não depender do driver ler LOB."""
+        return self._fetch_one(
+            "SELECT IDCARGAFUSION, IDEMPRESA, DESTINO, STATUSROMANEIO, "
+            "CAST(SUBSTR(OBSERVACAO, 1, 4000) AS VARCHAR(4000)) AS OBSERVACAO, "
+            "DATASAIDAPREVISTA, IDMOTORISTA, PESO, CUSTO, CUSTOESTIMADO, VOLUME, VALORTOTAL, "
+            "NUMEROENTREGAS, NUMEROCLIENTES, NUMEROCIDADES, CODIGOPRACAPRINCIPAL, IDVEICULO, "
+            "CUSTOPEDAGIO, DATACANCELAMENTO, DATAGRAVA, DATAINICIO, DATAPREVISTATERMINO, "
+            "DATATERMINO, KMREALIZADO, KMPREVISTO, KMTOTAL "
+            "FROM DBA.CARGAS_FUSION_TRACK WHERE IDCARGAFUSION = ?",
+            (id_carga_fusion,),
+        )
+
     def _fetch_all(
         self, sql: str, params: Sequence[object] = (), timeout: int | None = None
     ) -> list[dict[str, object]]:

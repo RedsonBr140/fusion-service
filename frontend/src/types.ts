@@ -380,3 +380,74 @@ export interface CandidatoPessoaCiss {
   DESCRCIDADE: string | null;
   CEP: string | null;
 }
+
+// --- Rastreio Fusion → CISS (getIntErp → DBA.CARGAS_FUSION_TRACK) -------
+
+export type StatusRastreio = "RECEBIDO" | "INTERNALIZADO" | "SUPERADO" | "IGNORADO" | "ERRO";
+
+export interface ItemRastreio {
+  id: number;
+  codigo_int: number | null;
+  tipo_int: string | null;
+  t10_id: number | null;
+  status: StatusRastreio;
+  erro: string | null;
+  tentativas: number;
+  confirmado_em: string | null;
+  confirmacao_erro: string | null;
+  recebido_em: string | null;
+  updated_at: string | null;
+}
+
+export type SituacaoEntregaRastreio = "PENDENTE" | "GRAVADA" | "SEM_NF" | "OUTRO_ROMANEIO" | "IGNORADA" | "ERRO";
+
+export interface EntregaRastreio {
+  pedido_erp: string;
+  formato: string | null;
+  nfs: { IDEMPRESA: number; IDPLANILHA: number; NUMNOTA: number }[];
+  status_entrega: number | null;
+  situacao: SituacaoEntregaRastreio;
+  erro: string | null;
+  tentativas: number;
+  gravada_em: string | null;
+  atualizado_em: string | null;
+}
+
+export interface ListagemRastreio {
+  ativo: boolean;
+  automatico: boolean;
+  intervalo_segundos: number;
+  contagem: Partial<Record<StatusRastreio, number>>;
+  nao_confirmadas: number;
+  entregas_contagem: Partial<Record<SituacaoEntregaRastreio, number>>;
+  itens: ItemRastreio[];
+}
+
+export interface DetalheRastreio {
+  id: number;
+  codigo_int: number | null;
+  tipo_int: string | null;
+  t10_id: number | null;
+  status: StatusRastreio;
+  erro: string | null;
+  confirmado_em: string | null;
+  confirmacao_erro: string | null;
+  payload: Record<string, unknown>;
+  linha_mapeada: Record<string, unknown> | null;
+  motivo_mapeamento: string | null;
+  linha_ciss: Record<string, unknown> | null;
+  erro_ciss: string | null;
+  entregas: EntregaRastreio[];
+}
+
+export interface ResultadoCicloRastreio {
+  status: "executado" | "pulado" | "nao_configurado";
+  motivo?: string;
+  recebidas?: number;
+  processadas?: Partial<Record<StatusRastreio, number>>;
+  confirmadas?: number;
+  falhas_confirmacao?: number;
+  entregas?: (Partial<Record<SituacaoEntregaRastreio, number>> & { restantes?: number }) | null;
+  erro_coleta?: string | null;
+  duracao_ms?: number;
+}

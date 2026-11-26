@@ -8,10 +8,17 @@ funções.
 
 ## Regras que não se negociam
 
-- **CISS DB2 é somente leitura**, sem exceção. ODBC/`pyodbc`, só `SELECT`,
-  guardado em `integrations/ciss.py::validate_readonly_query`. O `saveCarga`
-  do Fusion é escrita, mas não é escrita no CISS DB2 — é uma chamada SOAP
-  para outro sistema. A regra de read-only nunca falou sobre o Fusion.
+- **CISS DB2 é somente leitura, com uma única exceção estreita** (decisão
+  do negócio, 2026-11-26): as tabelas de rastreio `DBA.*_FUSION_TRACK`,
+  populadas a partir do `getIntErp` (ver "Rastreio Fusion → CISS" abaixo).
+  Leitura continua via `integrations/ciss.py::CissClient`, só `SELECT`,
+  guardado em `validate_readonly_query` — esse client nunca ganha caminho
+  de escrita. Escrita só em `integrations/ciss_escrita.py`, SQL fixo por
+  método e allow-list de tabela em `validate_escrita_permitida` (hoje só
+  `DBA.CARGAS_FUSION_TRACK` e `DBA.ENTREGAS_FUSION_TRACK`). A conexão é como `DBA` (decisão do
+  negócio), então a permissão do DB2 não protege nada — a allow-list é a
+  única defesa, e ampliá-la é decisão de negócio, não de código. O
+  `saveCarga` do Fusion é escrita em outro sistema (SOAP), não no CISS.
 - **A allow-list local (`usuarios_locais`) é consultada antes de qualquer
   chamada ao CISS.** Usuário fora dela nunca gera tráfego pro CISS.
 - **Nenhum log registra senha, token ou header `Authorization`** — nem do
@@ -581,6 +588,179 @@ existe um match direto, mesmo que outro cabeçalho de outra empresa também
 bata por `IDEMPRESABAIXAEST`. Não muda o caso original de entrega entre
 filiais (`2_22144917`): lá o item genuinamente não tinha cabeçalho na
 própria empresa, então o `NOT EXISTS` continua permitindo o fallback.
+
+## Rastreio Fusion → CISS: `getIntErp` → `DBA.CARGAS_FUSION_TRACK` → `setIntErp`
+
+`cargas_fusion/rastreio.py`, ligado por `RASTREIO_INT_ERP_ATIVO`
+(desligado por padrão, exige `REDIS_URL` pro lock) — **e mesmo ligado
+só roda pelo botão "Executar ciclo agora"**. Rodar sozinho em agenda é
+outra flag, `RASTREIO_INT_ERP_AUTOMATICO`, também desligada por padrão e
+que exige a primeira (decisão do negócio, 2026-11-26: não escrever no
+CISS automaticamente por enquanto). Confirmado com o
+negócio que **nada mais consome `getIntErp`** — o integrador nativo
+(`FUSIONT.FUSIONTRAK_INT_*`) parou em 2026-09-11, junto do corte de
+integração; o backup `FUSIONTRAK_INT_CARGA_BKP_20261013` tem 301
+`T10_ROMANEIO_MONTAGEM_CARGA` todas `STATUS_INT='N'`.
+
+**`getIntErp` é destrutivo**: toda pendência devolvida sai da fila do
+Fusion na hora (doc), não existe espiar sem consumir — testar contra
+produção consome dado real. Por isso a ordem fixa do ciclo:
+
+1. grava cru em `cargas_fusion_int_erp` (sqlite) antes de qualquer outra
+   coisa — é o único registro do que foi consumido (o log INFO de
+   `_chamar` com o corpo cru é a segunda rede);
+2. upsert (`MERGE` por `IDCARGAFUSION`) em `DBA.CARGAS_FUSION_TRACK`;
+   falha no DB2 → `ERRO`, retentado todo ciclo;
+3. só depois `setIntErp(int_id=CODIGO_INT)` — pra este negócio é só a
+   confirmação de "recebido e internalizado". Falha aqui não regrava o
+   CISS, só retenta a confirmação (`confirmado_em` nulo).
+
+**`carga = t10_id` no `setIntErp` é CONTORNO, não o resultado final
+desejado** (decisão do negócio, 2026-11-26). Confirmado no primeiro ciclo
+real: sem `carga`, o Fusion trata o `setIntErp` como **erro** — responde
+`{"<int_id>": "Erro: Retorno carga: <retorno_carga>"}` e grava nosso texto
+como motivo de falha (as 290 primeiras confirmações voltaram assim). Este
+serviço não cria carga no CISS, então não há número de carga do ERP pra
+mandar; até haver, vai o próprio romaneio do Fusion
+(`rastreio._carga_para_setinterp`). Efeito colateral provável: o Fusion
+passa a mostrar o próprio romaneio como "carga formada no ERP"
+(`t10_carga_formada_erp`). Trocar quando existir uma carga real do CISS
+pra vincular.
+
+Primeiro ciclo real (2026-11-26, local): fila drenada inteira, 292
+pendências (CODIGO_INT 1574326–1657774, 175 romaneios, `t10_data_grava`
+de 2026-09-10 a 2026-11-26 — o backlog desde que o integrador nativo
+parou). 290 gravadas no CISS; 1 `MONTAGEM_CARGA` com tudo nulo (sem
+`t10_id`) ficou `ERRO`, corretamente. Apareceu um tipo fora da doc,
+**`T10_ROMANEIO_CANCELA_CARGA`** (só `t10_id`, `CARGA_ERP`,
+`USUARIO_ERP`) — hoje `IGNORADO`; tratamento ainda não decidido.
+
+Só `T10_ROMANEIO_MONTAGEM_CARGA`/`T10_ROMANEIO_ROTEIRIZADO` são
+internalizados (os dois que a doc diz que o ERP precisa processar); o
+resto vira `IGNORADO`, guardado cru, sem `setIntErp`. Processa em ordem
+crescente de `CODIGO_INT`; uma pendência antiga retentada depois que uma
+mais nova do mesmo romaneio já foi gravada vira `SUPERADO` (confirmada,
+nunca regravada — sobrescreveria dado novo com velho).
+
+Mapeamento (`mapear_carga_track`): `IDCARGAFUSION = t10_id`,
+`IDEMPRESA = t43_codigo_filial_erp`, `IDMOTORISTA = t05_codigo_erp`,
+`IDVEICULO = t06_codigo_erp` (códigos do CISS que esta integração mesma
+manda como `codigo_erp` — confirmado com o negócio). Os três primeiros
+são NOT NULL na tabela: ausente/não numérico → `ERRO` com aviso no
+Discord, nunca placeholder. `NUMEROENTREGAS = len(ENTREGAS)` (não
+`numitens`, que é contagem de mercadoria). Datas `0000-00-00...` viram
+`NULL`. `DESTINO` trunca em 45 (mesmo tamanho do `t10_destino`).
+
+**`STATUSROMANEIO` vai sempre `NULL`** — o Fusion manda `t10_situacao`
+como texto (`Ativo`/`Em Curso`/`Finalizado`/`Unido`/`Cancelado`) e o
+mapeamento pro inteiro do CISS ainda não foi definido. O payload cru fica
+no sqlite, então dá pra reprocessar depois.
+
+Limitação de fonte: `getIntErp` só dispara na montagem/resequenciamento
+do romaneio — `KMREALIZADO`/`DATAINICIO`/`DATATERMINO` e status ao longo
+da viagem quase sempre chegam vazios por ele. Manter isso atualizado
+seria `detalheCarga`/`obtemEventos` (leitura não destrutiva), fora do
+escopo por enquanto. Demais `*_FUSION_TRACK` (eventos, devoluções) fora
+do escopo.
+
+### `ENTREGAS_FUSION_TRACK` — entregas do romaneio, NF sempre do CISS
+
+`cargas_fusion/rastreio_entregas.py`, etapa final do mesmo ciclo (depois
+de gravar/confirmar romaneios — `FK_ENTREGASFUSION_CARGAFUSION` exige a
+linha em `CARGAS_FUSION_TRACK` antes). Uma linha por NF por romaneio
+(chave do MERGE = índice único `(IDPLANILHA, IDCARGAFUSION)`).
+
+- **Lista de entregas**: o `ENTREGAS[]` do payload do `getIntErp` já
+  guardado. `detalheCarga` **não é usado** — testado em produção, devolve
+  as mesmas entregas com menos campos (sem datas nem status).
+- **`STATUSENTREGA`**: `status` inteiro do `detalheEntrega(pedido_erp)`,
+  direto, sem mapeamento (decisão do negócio). `detalheEntrega` também dá
+  observação e previsão atualizada (`dd/mm/aaaa hh:mm`) e
+  `fusion_romaneio_id` — entrega que hoje está em outro romaneio vira
+  `OUTRO_ROMANEIO`, não grava. Pedido inexistente responde texto puro.
+- **`IDENTREGAFUSION`, `IDDEVOLUCAO`, `DESCRDEVOLUCAO`: sempre nulos**
+  por enquanto (decisão do negócio — eventos de entrega ficam pra depois),
+  mesmo o `detalheEntrega` trazendo `id`/`motivo_devolucao_*`.
+- **NF (`IDEMPRESA`/`IDPLANILHA`/`NUMNOTA`) nunca vem do `t32_nf`** do
+  Fusion: é `"0"` em toda pré-carga (o pedido foi antes de faturar) e, no
+  formato nativo, repete o orçamento. Resolvida no CISS pelo formato do
+  código do pedido (`identificar_pedido`), todos confirmados contra
+  produção com NF conhecida:
+
+| `t32_pedido_original` | origem | caminho da NF no CISS |
+|---|---|---|
+| `21956497@1@0@1` | integrador nativo (pré-corte) | pré-nota@empresa → `PRODUTO_RETIRADO` → `PRODUTO_RETIRADO_NOTAS` → `NOTAS` |
+| `{IDORCAMENTO}_{id_planilha}` e `..._{id_planilha}R{n}` | carga real / reenvio cross-docking | `ORCAMENTO_PRE_NOTA` → pré-nota → retirada **daquela carga** → PRN → `NOTAS` |
+| `{IDORCAMENTO}_PC{id_precarga}` | pré-carga | idem, retirada da carga formada pela pré-carga (`PRE_CARGA_PROD.IDPLANILHARETIRADA`) — vazio até consolidar no CISS (`SEM_NF`, retenta) |
+| `PN{pré-nota}_{sufixo}` | pedido sem orçamento | `NOTAS.IDPLANILHA = pré-nota` direto, `IDEMPRESA` = filial da entrega |
+
+  Todo caminho exclui `SERIENOTA = 'PDV'` — o join direto pré-nota →
+  `NOTAS` também casa o registro interno de PDV (`NUMNOTA` = a própria
+  pré-nota), mesma armadilha de `get_itens_carga`. NF resolvida fica em
+  cache local (NF não muda depois de emitida).
+- **Reatualização**: toda entrega de romaneio **não terminado** é
+  regravada a cada ciclo (status/previsão mudam na viagem; `getIntErp`
+  não reenvia). **"Terminado" é PROVISÓRIO, não confirmado com o
+  negócio**: data de término/cancelamento no payload, OU toda entrega com
+  status em `STATUS_ENTREGA_FINAL` (`{7}` — único status de concluída
+  visto até agora), OU mais de `DIAS_MAXIMOS_DE_ATUALIZACAO` (30) desde a
+  saída prevista. Sem as duas últimas, romaneio novo seria reatualizado
+  pra sempre (nada avisa o fim da viagem).
+- Teto de 100 entregas por ciclo (`LIMITE_ENTREGAS_POR_CICLO`, cabe no
+  TTL do lock em produção); prioridade: nunca processadas → reatualização
+  → retentativa de `SEM_NF`/`ERRO` (por último, pra pré-carga não
+  faturada nunca matar de fome quem está em viagem).
+
+DB2: marcador `?` sem tipo não é aceito em `MERGE ... USING (VALUES ...)`
+(SQL0418N) — todo parâmetro vai com `CAST` explícito
+(`COLUNAS_CARGAS_FUSION_TRACK`). O `MERGE` foi validado contra produção
+numa transação com rollback (linha fake `IDCARGAFUSION=-1`, removida).
+A base não é Unicode: acento (`ç`) vira caractere de substituição,
+mesmo comportamento já visível nos `REMARKS` do catálogo.
+
+## Discord: dois canais — erros e atividade
+
+Decisão do negócio (2026-11-26): o webhook que já existia
+(`DISCORD_WEBHOOK_URL`) é o canal de **erros e avisos**; um segundo
+(`DISCORD_WEBHOOK_ATIVIDADE_URL`) recebe **toda ação** da integração.
+
+- **Erro** (`discord.erro`): vermelho, **com `@everyone`**.
+- **Aviso** (`discord.aviso`): mesmo webhook de erros, amarelo, **sem
+  menção** — algo pra alguém olhar, não algo quebrado: pré-carga
+  multi-pedido ignorada, tipo de pendência do `getIntErp` não processado
+  (ex. `T10_ROMANEIO_CANCELA_CARGA`), entrega com formato de pedido
+  desconhecido ou que está em outro romaneio. Cada um sai uma vez só
+  (são estados terminais).
+- Todo o resto vai com `allowed_mentions: {"parse": []}` explícito — texto
+  vindo do CISS/Fusion dentro de um embed nunca vira ping. Erro e aviso
+  **nunca dividem a mesma mensagem** na fila (`@everyone` vale pra
+  mensagem inteira).
+Tudo sai como embed (`integrations/discord.py::montar_embed` — cor por
+tipo, autor, campos, rodapé com o hostname pra distinguir local de
+produção).
+
+- **Atividade é capturada na fronteira, não em cada call site**:
+  `integrations/auditoria.py::ClienteAuditado` envolve `FusionClient` e
+  `CissEscritaClient` em `create_app`, então rota manual, ciclo
+  automático e rastreio caem no mesmo lugar. Só ação entra (escritas,
+  `getIntErp` que consumiu algo, `setIntErp`); leitura e heartbeat não.
+  Resposta de recusa do Fusion sem exceção (HTTP 200 com `msg`/`errors`/
+  `"Erro..."`) sai amarela — heurística só de cor, nunca de negócio.
+  Ação vinda de rota leva o usuário logado ("Por"); do scheduler,
+  "automático".
+- **Erro/aviso continuam decisão da camada de negócio**
+  (`discord.erro`/`discord.aviso(url, ...)`): pendência não gravada/não
+  confirmada (um embed por ciclo, não por pendência), falha/exceção do
+  envio automático.
+- **Fila em thread daemon** (`_Despachante`): até 10 embeds por mensagem,
+  respeita 429 (`retry_after`) e o bucket do header. Motivo: no primeiro
+  ciclo real, uma mensagem por pendência estourou o rate limit (HTTP 429).
+  Fila é por processo (cada worker do gunicorn tem a sua); embed na fila
+  se perde se o processo morrer — é notificação, não registro (o
+  registro de verdade é o sqlite/CISS).
+- **Nunca logar a URL do webhook** — carrega o token. Vazou via
+  traceback do `requests.raise_for_status()` em log real (2026-11-26);
+  `_postar` só loga tipo da exceção / status HTTP.
 
 ## Métodos do WSDL não implementados
 

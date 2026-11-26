@@ -365,11 +365,17 @@ def executar_ciclo(
                 if qtd_pedidos != 1:
                     primeira_vez = _registrar_multi_pedido(conn, id_empresa, id_precarga, qtd_pedidos)
                     if primeira_vez:
-                        discord.notificar(
+                        # Não é erro (limite permanente do escopo, ver
+                        # CLAUDE.md) — aviso: canal de erros, sem menção.
+                        discord.aviso(
                             discord_webhook_url,
-                            f"Pré-carga {service.codigo_pre_carga(id_empresa, id_precarga)} "
-                            f"(empresa {id_empresa}) tem {qtd_pedidos} pedidos — fora do escopo "
-                            "do envio automático (só pedido único).",
+                            "Pré-carga multi-pedido ignorada pelo envio automático",
+                            "Só pré-carga de pedido único entra no envio automático.",
+                            campos=[
+                                ("Pré-carga", f"`{service.codigo_pre_carga(id_empresa, id_precarga)}`", True),
+                                ("Empresa", id_empresa, True),
+                                ("Pedidos", qtd_pedidos, True),
+                            ],
                         )
                     continue
 
@@ -398,10 +404,14 @@ def executar_ciclo(
                     falhas += 1
                     fila = saida.get("fila") or {}
                     if fila.get("tentativas") == 1:
-                        discord.notificar(
+                        discord.erro(
                             discord_webhook_url,
-                            f"Falha ao enviar pré-carga {service.codigo_pre_carga(id_empresa, id_precarga)} "
-                            f"(empresa {id_empresa}) automaticamente: {saida.get('motivo')}",
+                            "Falha no envio automático de pré-carga",
+                            saida.get("motivo"),
+                            campos=[
+                                ("Pré-carga", f"`{service.codigo_pre_carga(id_empresa, id_precarga)}`", True),
+                                ("Empresa", id_empresa, True),
+                            ],
                         )
                 elif saida["status"] == "enviada":
                     enviadas += 1
@@ -412,10 +422,11 @@ def executar_ciclo(
                     id_empresa,
                     id_precarga,
                 )
-                discord.notificar(
+                discord.erro(
                     discord_webhook_url,
-                    f"Erro inesperado processando pré-carga {id_empresa}/{id_precarga} "
-                    "no ciclo automático — ver logs.",
+                    "Erro inesperado no envio automático de pré-carga",
+                    "Exceção não tratada — detalhe completo nos logs do backend.",
+                    campos=[("Pré-carga", f"`{id_empresa}/{id_precarga}`", True)],
                 )
             finally:
                 duracao_item_ms = int((time.monotonic() - inicio_item) * 1000)
@@ -444,6 +455,18 @@ def executar_ciclo(
                 fusion.avisar_vivo(agora)
             except Exception:
                 logger.warning("Falha ao avisar heartbeat (set_dt_ult_int_erp) ao Fusion", exc_info=True)
+
+        if candidatas or enviadas or falhas:
+            discord.atividade(
+                "🔁 Ciclo de envio automático de pré-carga",
+                cor=discord.COR_INFO,
+                campos=[
+                    ("Candidatas", candidatas, True),
+                    ("Enviadas", enviadas, True),
+                    ("Falhas", falhas, True),
+                    ("Duração", f"{duracao_ms / 1000:.1f}s", True),
+                ],
+            )
 
         itens_lentos.sort(key=lambda i: i["duracao_ms"], reverse=True)
         _registrar_execucao_detalhada(

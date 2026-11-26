@@ -11,6 +11,7 @@ import { FusionServiceLoginForm } from "@/tools/cargas_fusion/FusionServiceLogin
 import { HistoricoPreCargaSection } from "@/tools/cargas_fusion/HistoricoPreCargaSection";
 import { HistoricoSection } from "@/tools/cargas_fusion/HistoricoSection";
 import { MetricasSection } from "@/tools/cargas_fusion/MetricasSection";
+import { RastreioSection } from "@/tools/cargas_fusion/RastreioSection";
 import {
   useAjudantes,
   useAtualizarAjudante,
@@ -21,11 +22,12 @@ import {
 import { useAppConfig } from "@/tools/cargas_fusion/useCargasFusion";
 import { useFusionServiceAuth } from "@/tools/cargas_fusion/useFusionServiceAuth";
 
-type Secao = "busca" | "historico" | "metricas" | "diagnostico" | "ajudantes";
+type Secao = "busca" | "historico" | "rastreio" | "metricas" | "diagnostico" | "ajudantes";
 
 const ABAS: { chave: Secao; rotulo: string }[] = [
   { chave: "busca", rotulo: "Buscar cargas" },
   { chave: "historico", rotulo: "Histórico" },
+  { chave: "rastreio", rotulo: "Rastreio (getIntErp)" },
   { chave: "metricas", rotulo: "Métricas" },
   { chave: "diagnostico", rotulo: "Diagnóstico" },
   { chave: "ajudantes", rotulo: "Ajudantes" },
@@ -116,6 +118,7 @@ export function CargasFusionPage() {
                 ) : (
                   <HistoricoPreCargaSection />
                 ))}
+              {secao === "rastreio" && <RastreioSection />}
               {secao === "metricas" && <MetricasSection />}
               {secao === "diagnostico" && <DiagnosticoSection />}
               {secao === "ajudantes" && (

@@ -13,12 +13,15 @@ from __future__ import annotations
 from functools import wraps
 
 from datetime import datetime
+from decimal import Decimal
 
 from flask import Blueprint, current_app, g, jsonify, request
 
 from auth.decorators import login_required
-from cargas_fusion import auto_envio, service
+from cargas_fusion import auto_envio, rastreio, service
 from database import get_db
+from integrations import discord
+from integrations.auditoria import quem
 from integrations.ciss import CissDbError
 from integrations.fusion_portal import FusionPortalError
 
@@ -780,6 +783,7 @@ def ver_estado_envio_automatico():
 @login_required
 def pausar_envio_automatico():
     auto_envio.pausar(get_db())
+    discord.atividade("⏸️ Envio automático de pré-carga pausado", cor=discord.COR_AVISO, campos=[("Por", quem(), True)])
     return jsonify(auto_envio.obter_estado(get_db())), 200
 
 
@@ -787,6 +791,7 @@ def pausar_envio_automatico():
 @login_required
 def retomar_envio_automatico():
     auto_envio.retomar(get_db())
+    discord.atividade("▶️ Envio automático de pré-carga retomado", cor=discord.COR_INFO, campos=[("Por", quem(), True)])
     return jsonify(auto_envio.obter_estado(get_db())), 200
 
 
@@ -819,6 +824,77 @@ def executar_ciclo_agora():
         corte=config.auto_envio_pre_carga_corte,
         discord_webhook_url=config.discord_webhook_url,
         lock_timeout_segundos=config.auto_envio_pre_carga_intervalo_segundos * 3,
+    )
+    return jsonify(resultado), 200
+
+
+# --- Rastreio Fusion → CISS (getIntErp → DBA.CARGAS_FUSION_TRACK) --------
+
+
+@bp.get("/rastreio/int-erp")
+@login_required
+def ver_rastreio_int_erp():
+    try:
+        limite = max(1, min(int(request.args.get("limite", 100)), 500))
+    except ValueError:
+        limite = 100
+    resultado = rastreio.listar(get_db(), status=request.args.get("status") or None, limite=limite)
+    resultado["ativo"] = current_app.config.get("RASTREIO_REDIS_CLIENT") is not None
+    config = current_app.config["APP_CONFIG"]
+    resultado["automatico"] = bool(config.rastreio_int_erp_ativo and config.rastreio_int_erp_automatico)
+    resultado["intervalo_segundos"] = config.rastreio_int_erp_intervalo_segundos
+    return jsonify(resultado), 200
+
+
+@bp.get("/rastreio/int-erp/<int:id_>")
+@login_required
+def ver_item_rastreio_int_erp(id_: int):
+    """Pendência + linha mapeada + a linha como está de verdade em
+    `DBA.CARGAS_FUSION_TRACK` (leitura, `CissClient`) — `linha_ciss`
+    `None` quando ainda não foi gravada; `erro_ciss` quando o DB2 não
+    respondeu (não derruba a tela por isso)."""
+    item = rastreio.detalhe(get_db(), id_)
+    if item is None:
+        return jsonify({"error": "Pendência não encontrada."}), 404
+    item["linha_ciss"] = None
+    item["erro_ciss"] = None
+    ciss = _ciss_client()
+    if ciss is None:
+        item["erro_ciss"] = MSG_CISS_NAO_CONFIGURADO
+    elif item["t10_id"] is not None:
+        try:
+            linha = ciss.get_carga_fusion_track(item["t10_id"])
+        except CissDbError:
+            item["erro_ciss"] = MSG_CISS_INDISPONIVEL
+        else:
+            item["linha_ciss"] = (
+                {chave: (str(valor) if isinstance(valor, Decimal) else valor) for chave, valor in linha.items()}
+                if linha
+                else None
+            )
+    return jsonify(item), 200
+
+
+@bp.post("/rastreio/int-erp/executar-agora")
+@login_required
+def executar_rastreio_int_erp_agora():
+    """Um tick do rastreio na hora — mesmo lock do agendado, então nunca
+    consome a fila em paralelo com um tick automático."""
+    redis_client = current_app.config.get("RASTREIO_REDIS_CLIENT")
+    if redis_client is None:
+        return (
+            jsonify({"error": "Rastreio desligado neste ambiente (RASTREIO_INT_ERP_ATIVO=false)."}),
+            409,
+        )
+    config = current_app.config["APP_CONFIG"]
+    resultado = rastreio.executar_ciclo(
+        get_db(),
+        redis_client,
+        _fusion_client(),
+        current_app.config.get("CISS_ESCRITA_CLIENT"),
+        discord_webhook_url=config.discord_webhook_url,
+        lock_timeout_segundos=config.rastreio_int_erp_intervalo_segundos * 3,
+        ciss_client=_ciss_client(),
     )
     return jsonify(resultado), 200
 

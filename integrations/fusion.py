@@ -133,10 +133,16 @@ def _partes_sem_credenciais(partes: dict[str, str]) -> dict[str, str]:
     return {nome: valor for nome, valor in partes.items() if nome not in _CAMPOS_CREDENCIAL}
 
 
-def _chamar(api_url: str, metodo: str, partes: dict[str, str]) -> object:
+def _chamar(
+    api_url: str, metodo: str, partes: dict[str, str], *, resparam_vazio_ok: bool = False
+) -> object:
     """POST do envelope SOAP e devolve o conteúdo de `resParam` já
     decodificado do JSON. Loga o restante de `partes` (ex.: `array_dados`,
     `placaOuId`) e o corpo cru de `resParam` — nunca `login`/`senha`.
+
+    `resparam_vazio_ok`: `getIntErp` com a fila vazia responde "vazio"
+    (doc) — um `<resParam/>` sem texto ali é resposta legítima, não falha
+    de transporte. Nas demais chamadas continua sendo erro.
     """
     envelope = _montar_envelope(metodo, partes)
 
@@ -169,6 +175,9 @@ def _chamar(api_url: str, metodo: str, partes: dict[str, str]) -> object:
         raise FusionUnavailable from None
 
     elemento = next((el for el in raiz.iter() if _nome_local(el.tag) == "resParam"), None)
+    if elemento is not None and elemento.text is None and resparam_vazio_ok:
+        logger.info("Fusion respondeu a %s com resParam vazio", metodo)
+        return ""
     if elemento is None or elemento.text is None:
         logger.warning("Resposta do Fusion sem resParam para %s", metodo)
         raise FusionUnavailable from None
@@ -267,6 +276,75 @@ class FusionClient:
 
     def consultar_todos_veiculos(self, filtros: dict | None = None) -> object:
         return self._chamar_array("consultarTodosVeiculos", filtros or {})
+
+    def get_int_erp(self, limite: int = 50) -> list[dict]:
+        """Próximas pendências da fila Fusion → ERP (roteirizações:
+        `T10_ROMANEIO_MONTAGEM_CARGA`, `T10_ROMANEIO_ROTEIRIZADO`, ...).
+
+        **Leitura destrutiva**: toda pendência devolvida sai da fila do
+        lado do Fusion na hora (doc do getIntErp) — não existe "olhar sem
+        consumir". Quem chama precisa persistir o que recebeu antes de
+        fazer qualquer outra coisa. O corpo cru da resposta fica no log
+        de `_chamar` (INFO), que é a última rede de segurança.
+
+        `limite_padrao`: sem ele o Fusion devolve 1 pendência por
+        chamada; máximo documentado 50. Fila vazia → `[]`. Qualquer outra
+        coisa que não seja lista/objeto de pendência (texto de erro,
+        `{"msg": ...}`) levanta `FusionUnavailable` — não dá pra saber se
+        algo foi consumido, mas engolir em silêncio seria pior.
+        """
+        resultado = _chamar(
+            self._config.api_url,
+            "getIntErp",
+            {
+                "login": self._config.login,
+                "senha": self._config.senha,
+                "limite_padrao": str(max(1, min(limite, 50))),
+            },
+            resparam_vazio_ok=True,
+        )
+        if resultado in ("", None, [], {}) or (isinstance(resultado, str) and not resultado.strip()):
+            return []
+        if isinstance(resultado, dict) and "CODIGO_INT" in resultado:
+            resultado = [resultado]
+        if isinstance(resultado, list) and all(isinstance(item, dict) for item in resultado):
+            return resultado
+        logger.warning("getIntErp devolveu formato inesperado: %r", resultado)
+        raise FusionUnavailable
+
+    def detalhe_entrega(self, pedido_erp: str) -> dict | None:
+        """Estado atual de uma entrega pelo código do pedido (leitura, não
+        consome nada). `status` vem inteiro como string (`"1"`, `"7"`),
+        `fusion_romaneio_id` diz em qual romaneio ela está agora. Pedido
+        inexistente responde texto puro (`"Nao foi encontrado pedido com
+        codigo: ..."`) → `None`, mesmo tratamento de `consultar_veiculo`."""
+        resultado = _chamar(
+            self._config.api_url,
+            "detalheEntrega",
+            {"login": self._config.login, "senha": self._config.senha, "pedido_erp": pedido_erp},
+        )
+        if isinstance(resultado, list) and len(resultado) == 1:
+            resultado = resultado[0]
+        return resultado if isinstance(resultado, dict) else None
+
+    def set_int_erp(self, int_id: str, retorno_carga: str, carga: str | None = None) -> object:
+        """Confirma ao Fusion que a pendência `int_id` (`CODIGO_INT` do
+        getIntErp) foi recebida e internalizada no ERP. Sucesso documentado
+        é o texto `"OK"`; devolve o retorno cru, quem chama decide.
+
+        `carga`: número da carga no ERP. Confirmado em produção
+        (2026-11-26) que sem ele o Fusion trata a chamada como **erro** —
+        responde `{"<int_id>": "Erro: Retorno carga: <retorno_carga>"}` e
+        grava nosso texto como motivo da falha."""
+        partes = {
+            "login": self._config.login,
+            "senha": self._config.senha,
+            "int_id": str(int_id),
+            "retorno_carga": retorno_carga,
+        }
+        if carga:
+            partes["carga"] = str(carga)
+        return _chamar(self._config.api_url, "setIntErp", partes)
 
     def avisar_vivo(self, ultimo_ciclo: datetime) -> None:
         """Heartbeat do webservice legado (não o SOAP do WSDL) —

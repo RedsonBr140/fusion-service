@@ -20,10 +20,13 @@ from flask import Flask, jsonify, send_from_directory
 import database
 from auth.decorators import login_required
 from auth.routes import bp as auth_bp
-from cargas_fusion import auto_envio
+from cargas_fusion import auto_envio, rastreio
 from cargas_fusion.routes import bp as cargas_fusion_bp
 from config import Config, load_config
 from integrations.ciss import CissClient
+from integrations import discord
+from integrations.auditoria import ClienteAuditado
+from integrations.ciss_escrita import CissEscritaClient
 from integrations.fusion import FusionClient
 from integrations.fusion_portal import FusionPortalClient
 
@@ -86,6 +89,40 @@ def _agendar_auto_envio_pre_carga(
     scheduler.start()
 
 
+def _agendar_rastreio_int_erp(
+    config: Config,
+    redis_client,
+    fusion_client: FusionClient | None,
+    escrita_client: CissEscritaClient | None,
+    ciss_client: CissClient | None,
+) -> None:
+    """Só roda com `RASTREIO_INT_ERP_ATIVO=true` **e**
+    `RASTREIO_INT_ERP_AUTOMATICO=true`. Mesmo esquema de
+    `_agendar_auto_envio_pre_carga`: lock no Redis compartilhado com a
+    rota "executar agora" — `getIntErp` é destrutivo, dois consumidores
+    simultâneos dividiriam a fila sem ninguém perceber."""
+
+    def _tick() -> None:
+        conn = database.connect(config.database_path)
+        try:
+            resultado = rastreio.executar_ciclo(
+                conn,
+                redis_client,
+                fusion_client,
+                escrita_client,
+                discord_webhook_url=config.discord_webhook_url,
+                lock_timeout_segundos=config.rastreio_int_erp_intervalo_segundos * 3,
+                ciss_client=ciss_client,
+            )
+            logger.info("Ciclo de rastreio getIntErp: %s", resultado)
+        finally:
+            conn.close()
+
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(_tick, "interval", seconds=config.rastreio_int_erp_intervalo_segundos)
+    scheduler.start()
+
+
 def create_app(config=None) -> Flask:
     _configurar_logging()
     app = Flask(__name__)
@@ -93,17 +130,32 @@ def create_app(config=None) -> Flask:
     app.config["APP_CONFIG"] = config
     app.config["SECRET_KEY"] = config.secret_key
 
+    # Toda escrita no Fusion/CISS passa por `ClienteAuditado` → canal de
+    # atividade do Discord (integrations/auditoria.py). Leitura do CISS
+    # (`CissClient`) não é ação, fica sem proxy.
+    discord.configurar_atividade(config.discord_webhook_atividade_url)
     app.config["CISS_DB_CLIENT"] = CissClient(config.ciss_db) if config.ciss_db else None
-    app.config["FUSION_CLIENT"] = FusionClient(config.fusion) if config.fusion else None
+    app.config["FUSION_CLIENT"] = ClienteAuditado(FusionClient(config.fusion)) if config.fusion else None
     app.config["FUSION_PORTAL_CLIENT"] = (
         FusionPortalClient(config.fusion_portal) if config.fusion_portal else None
     )
     # `None` quando o ciclo automático nunca foi ligado (sem REDIS_URL) —
     # `AUTO_ENVIO_REDIS_CLIENT is None` é como a rota de "executar agora"
     # decide se o recurso existe neste ambiente, sem reler `Config`.
-    app.config["AUTO_ENVIO_REDIS_CLIENT"] = (
-        redis.Redis.from_url(config.redis_url) if config.auto_envio_pre_carga_ativo else None
+    # Escrita no CISS: só o rastreio (DBA.CARGAS_FUSION_TRACK) usa — ver
+    # integrations/ciss_escrita.py. Mesmo CissDbConfig da leitura.
+    app.config["CISS_ESCRITA_CLIENT"] = (
+        ClienteAuditado(CissEscritaClient(config.ciss_db)) if config.ciss_db else None
     )
+    redis_client = (
+        redis.Redis.from_url(config.redis_url)
+        if config.auto_envio_pre_carga_ativo or config.rastreio_int_erp_ativo
+        else None
+    )
+    app.config["AUTO_ENVIO_REDIS_CLIENT"] = redis_client if config.auto_envio_pre_carga_ativo else None
+    # `None` quando o rastreio não foi ligado — mesma convenção de
+    # AUTO_ENVIO_REDIS_CLIENT pra rota "executar agora" decidir 409.
+    app.config["RASTREIO_REDIS_CLIENT"] = redis_client if config.rastreio_int_erp_ativo else None
 
     database.init_app(app)
 
@@ -117,6 +169,17 @@ def create_app(config=None) -> Flask:
             app.config["CISS_DB_CLIENT"],
             app.config["FUSION_CLIENT"],
             app.config["FUSION_PORTAL_CLIENT"],
+        )
+
+    # Ativo ≠ automático: com só RASTREIO_INT_ERP_ATIVO, o rastreio existe
+    # (botão "Executar ciclo agora") mas nunca roda sozinho.
+    if config.rastreio_int_erp_ativo and config.rastreio_int_erp_automatico:
+        _agendar_rastreio_int_erp(
+            config,
+            app.config["RASTREIO_REDIS_CLIENT"],
+            app.config["FUSION_CLIENT"],
+            app.config["CISS_ESCRITA_CLIENT"],
+            app.config["CISS_DB_CLIENT"],
         )
 
     @app.get("/api/health")

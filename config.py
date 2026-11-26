@@ -141,8 +141,13 @@ class Config:
     cobre o caso de alguém religar aquela sem pensar nesta."""
 
     discord_webhook_url: str | None = None
-    """Opcional — sem ele, `cargas_fusion/auto_envio.py` só loga as
-    falhas/achados, nunca tenta `integrations/discord.py::notificar`."""
+    """Canal de **erros** do Discord (só falha). Opcional — sem ele, erro
+    só vai pro log."""
+
+    discord_webhook_atividade_url: str | None = None
+    """Canal de **atividade**: toda ação da integração (escrita no Fusion
+    e no CISS, fila consumida, resumo de ciclo) — `integrations/auditoria.py`.
+    Opcional — sem ele, só loga."""
 
     redis_url: str | None = None
     """Backend do lock distribuído (`redis-py`) que evita o ciclo
@@ -173,6 +178,23 @@ class Config:
     `AAAA-MM-DDTHH:MM:SS`) só pra permitir um teste local/live deliberado
     contra uma janela mais antiga — o default de produção não muda só
     porque isto existe."""
+
+    rastreio_int_erp_ativo: bool = False
+    """Liga o rastreio (`cargas_fusion/rastreio.py`: `getIntErp` →
+    `DBA.CARGAS_FUSION_TRACK`/`ENTREGAS_FUSION_TRACK` → `setIntErp`) — a
+    única escrita deste serviço no CISS DB2 — **só pelo botão "Executar
+    ciclo agora"**. Sozinho, nunca roda em agenda: isso é
+    `rastreio_int_erp_automatico`. Desligado por padrão: `getIntErp` é
+    destrutivo. Exige `REDIS_URL` (mesmo lock contra os 2 workers)."""
+
+    rastreio_int_erp_automatico: bool = False
+    """Agenda o ciclo do rastreio a cada `rastreio_int_erp_intervalo_segundos`,
+    sem ninguém clicar. Desligado por padrão, e separado de
+    `rastreio_int_erp_ativo` de propósito (decisão do negócio,
+    2026-11-26): ligar o rastreio não pode, por si só, começar a escrever
+    no CISS sozinho. Só vale com `rastreio_int_erp_ativo` também ligado."""
+
+    rastreio_int_erp_intervalo_segundos: int = 120
 
 
 def _required(env: Mapping[str, str], nome: str) -> str:
@@ -300,6 +322,18 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
             "AUTO_ENVIO_PRE_CARGA_ATIVO=true exige REDIS_URL — é o lock que evita "
             "o ciclo automático disparar em dobro nos workers do gunicorn."
         )
+    rastreio_int_erp_ativo = _bool(env, "RASTREIO_INT_ERP_ATIVO", False)
+    rastreio_int_erp_automatico = _bool(env, "RASTREIO_INT_ERP_AUTOMATICO", False)
+    if rastreio_int_erp_automatico and not rastreio_int_erp_ativo:
+        raise ConfigError(
+            "RASTREIO_INT_ERP_AUTOMATICO=true exige RASTREIO_INT_ERP_ATIVO=true — "
+            "agendar um rastreio desligado não faz sentido, provável erro de digitação."
+        )
+    if rastreio_int_erp_ativo and not redis_url:
+        raise ConfigError(
+            "RASTREIO_INT_ERP_ATIVO=true exige REDIS_URL — getIntErp é destrutivo, "
+            "dois workers consumindo a fila ao mesmo tempo não pode acontecer."
+        )
 
     return Config(
         secret_key=_required(env, "SECRET_KEY"),
@@ -313,6 +347,7 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         mostrar_cargas_ciss=_bool(env, "MOSTRAR_CARGAS_CISS", False),
         somente_pedidos_soltos=_bool(env, "SOMENTE_PEDIDOS_SOLTOS", True),
         discord_webhook_url=_optional(env, "DISCORD_WEBHOOK_URL"),
+        discord_webhook_atividade_url=_optional(env, "DISCORD_WEBHOOK_ATIVIDADE_URL"),
         redis_url=redis_url,
         auto_envio_pre_carga_ativo=auto_envio_pre_carga_ativo,
         auto_envio_pre_carga_intervalo_segundos=int(
@@ -324,4 +359,7 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
             if env.get("AUTO_ENVIO_PRE_CARGA_CORTE")
             else datetime(2026, 10, 28, 8, 0, 0)
         ),
+        rastreio_int_erp_ativo=rastreio_int_erp_ativo,
+        rastreio_int_erp_automatico=rastreio_int_erp_automatico,
+        rastreio_int_erp_intervalo_segundos=int(env.get("RASTREIO_INT_ERP_INTERVALO_SEGUNDOS") or 120),
     )

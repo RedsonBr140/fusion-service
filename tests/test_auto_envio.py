@@ -210,10 +210,15 @@ def test_pre_carga_multi_pedido_vista_de_novo_nao_duplica_registro(conn, redis_c
 
 
 def test_pre_carga_multi_pedido_notifica_discord_so_na_primeira_vez(conn, redis_client, monkeypatch):
+    """Multi-pedido não é erro (limite permanente do escopo) — é aviso:
+    canal de erros, amarelo, sem @everyone."""
     chamadas = []
+    erros = []
     monkeypatch.setattr(
-        "cargas_fusion.auto_envio.discord.notificar", lambda url, msg: chamadas.append(msg)
+        "cargas_fusion.auto_envio.discord.aviso",
+        lambda url, titulo, descricao=None, campos=None: chamadas.append(f"{titulo} {campos}"),
     )
+    monkeypatch.setattr("cargas_fusion.auto_envio.discord.erro", lambda *a, **kw: erros.append(a))
     itens = [_item(1, 10), _item(2, 20)]
     client = CissClientFalso(pre_cargas=[_pre_carga(3, 500)], itens_por_precarga={500: itens})
 
@@ -221,7 +226,8 @@ def test_pre_carga_multi_pedido_notifica_discord_so_na_primeira_vez(conn, redis_
         executar(conn, redis_client, client, FusionClienteFalso(), None, discord_webhook_url="https://discord.test/x")
 
     assert len(chamadas) == 1
-    assert "500" in chamadas[0] or "3" in chamadas[0]
+    assert "PC_3_500" in chamadas[0]
+    assert erros == []
 
 
 # --- pedido único: enviado de verdade ------------------------------------
@@ -265,7 +271,7 @@ def test_pre_carga_ja_enviada_nunca_e_reprocessada(conn, redis_client):
 def test_falha_no_envio_notifica_discord_so_na_primeira_tentativa(conn, redis_client, monkeypatch):
     chamadas = []
     monkeypatch.setattr(
-        "cargas_fusion.auto_envio.discord.notificar", lambda url, msg: chamadas.append(msg)
+        "cargas_fusion.auto_envio.discord.erro", lambda url, titulo, descricao=None, campos=None: chamadas.append(titulo)
     )
     itens = [_item(1, 10)]
     client = CissClientFalso(
