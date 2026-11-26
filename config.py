@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -9,6 +10,8 @@ from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
 
 
 class ConfigError(RuntimeError):
@@ -259,10 +262,36 @@ def _load_fusion_portal(env: Mapping[str, str]) -> FusionPortalConfig | None:
     )
 
 
+def _sem_aspas_envolventes(env: Mapping[str, str]) -> dict[str, str]:
+    """Tira um par de aspas (`"..."`/`'...'`) envolvendo o valor inteiro.
+
+    Achado em staging (2026-11-26): o Secret do k8s foi gerado com
+    `kubectl create secret --from-env-file` a partir de um `.env` com valores
+    entre aspas — `python-dotenv` remove essas aspas ao ler o arquivo, mas
+    `--from-env-file` não, então `FUSION_PORTAL_SENHA` chegava ao processo
+    com as aspas literais. O login no portal falhava (`{'success': False}`)
+    e toda busca de motorista/veículo devolvia 503. Normalizar aqui deixa o
+    k8s igual ao `.env` local, venha o ambiente de onde vier. Só o nome da
+    chave vai pro log, nunca o valor."""
+    normalizado = dict(env)
+    corrigidas = []
+    for chave, valor in env.items():
+        if len(valor) >= 2 and valor[0] == valor[-1] and valor[0] in "\"'":
+            normalizado[chave] = valor[1:-1]
+            corrigidas.append(chave)
+    if corrigidas:
+        logger.warning(
+            "Variáveis de ambiente com aspas envolvendo o valor — aspas removidas: %s",
+            ", ".join(sorted(corrigidas)),
+        )
+    return normalizado
+
+
 def load_config(env: Mapping[str, str] | None = None) -> Config:
     if env is None:
         load_dotenv(Path(__file__).resolve().parent / ".env")
         env = os.environ
+    env = _sem_aspas_envolventes(env)
 
     auto_envio_pre_carga_ativo = _bool(env, "AUTO_ENVIO_PRE_CARGA_ATIVO", False)
     redis_url = _optional(env, "REDIS_URL")

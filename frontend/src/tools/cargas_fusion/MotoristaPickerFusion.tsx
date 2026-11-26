@@ -4,8 +4,13 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { ApiError } from "@/api";
 import { useBuscarMotoristas } from "@/tools/cargas_fusion/useCadastroFusion";
 import type { MotoristaFusion } from "@/types";
+
+function mensagemDeErro(erro: unknown): string | null {
+  return erro instanceof ApiError ? erro.message : erro ? "Erro inesperado." : null;
+}
 
 interface Props {
   id: string;
@@ -80,6 +85,11 @@ export function MotoristaPickerFusion({ id, sugestao, escolhido, onEscolher }: P
             </li>
           ))}
         </ul>
+      )}
+      {buscar.isError && (
+        <p className="rounded-md bg-destructive/10 px-3 py-2.5 text-sm text-destructive-text">
+          {mensagemDeErro(buscar.error)}
+        </p>
       )}
     </div>
   );
