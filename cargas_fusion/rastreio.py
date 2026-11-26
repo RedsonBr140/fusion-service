@@ -17,10 +17,10 @@ internalizados (os dois tipos que a doc do getIntErp diz que o ERP
 precisa processar); o resto fica `IGNORADO`, guardado cru, sem
 `setIntErp`.
 
-`STATUSROMANEIO` vai sempre `NULL` por enquanto: o Fusion manda
-`t10_situacao` como texto ("Ativo", "Em Curso", ...) e o mapeamento pro
-inteiro do CISS ainda não foi definido. O payload cru guardado no sqlite
-permite reprocessar depois que o mapeamento existir.
+`STATUSROMANEIO`: o Fusion manda `t10_situacao` como texto e nenhum lado
+define o inteiro (nem a doc do Fusion, nem o catálogo do CISS) — a
+tabela `STATUS_ROMANEIO` é nossa, decisão do negócio (2026-11-26).
+Situação fora dela vai `NULL` com aviso no Discord.
 """
 
 from __future__ import annotations
@@ -121,6 +121,24 @@ def _texto(valor: object, tamanho: int | None = None) -> str | None:
     return texto[:tamanho] if tamanho else texto
 
 
+# Ordem da doc do `listaCargas` ('Ativo', 'Em Curso', 'Finalizado',
+# 'Unido', 'Cancelado'); "Bloqueado" aparece em produção mas não na doc.
+# Decisão do negócio (2026-11-26) — nenhum dos dois sistemas define isso.
+STATUS_ROMANEIO = {
+    "ATIVO": 1,
+    "EM CURSO": 2,
+    "FINALIZADO": 3,
+    "UNIDO": 4,
+    "CANCELADO": 5,
+    "BLOQUEADO": 6,
+}
+
+
+def status_romaneio(situacao: object) -> int | None:
+    texto = _texto(situacao)
+    return STATUS_ROMANEIO.get(texto.upper()) if texto else None
+
+
 def mapear_carga_track(item: dict) -> tuple[dict | None, str | None]:
     """Pendência do getIntErp → linha de `DBA.CARGAS_FUSION_TRACK`.
     Devolve `(linha, None)` ou `(None, motivo)` quando falta algo que a
@@ -148,7 +166,7 @@ def mapear_carga_track(item: dict) -> tuple[dict | None, str | None]:
         "IDCARGAFUSION": id_carga,
         "IDEMPRESA": id_empresa,
         "DESTINO": _texto(_campo(item, "t10_destino"), 45),
-        "STATUSROMANEIO": None,
+        "STATUSROMANEIO": status_romaneio(_campo(item, "t10_situacao")),
         "OBSERVACAO": _texto(_campo(item, "t10_obs")),
         "DATASAIDAPREVISTA": _data(_campo(item, "t10_data_saida")),
         "IDMOTORISTA": id_motorista,
@@ -302,6 +320,12 @@ def _internalizar(
             )
         return "ERRO"
 
+    situacao = _texto(_campo(json.loads(linha["payload"]), "t10_situacao"))
+    if situacao and registro["STATUSROMANEIO"] is None and tentativas == 1:
+        avisos.append(
+            f"{linha['codigo_int']} (romaneio {linha['t10_id']}): situação `{situacao}` fora da tabela "
+            "STATUS_ROMANEIO — gravado com STATUSROMANEIO nulo"
+        )
     _atualizar(conn, linha["id"], status="INTERNALIZADO", erro=None, tentativas=tentativas)
     return "INTERNALIZADO"
 

@@ -652,10 +652,16 @@ Discord, nunca placeholder. `NUMEROENTREGAS = len(ENTREGAS)` (não
 `numitens`, que é contagem de mercadoria). Datas `0000-00-00...` viram
 `NULL`. `DESTINO` trunca em 45 (mesmo tamanho do `t10_destino`).
 
-**`STATUSROMANEIO` vai sempre `NULL`** — o Fusion manda `t10_situacao`
-como texto (`Ativo`/`Em Curso`/`Finalizado`/`Unido`/`Cancelado`) e o
-mapeamento pro inteiro do CISS ainda não foi definido. O payload cru fica
-no sqlite, então dá pra reprocessar depois.
+**`STATUSROMANEIO`** = `rastreio.STATUS_ROMANEIO` sobre o texto de
+`t10_situacao`: `Ativo` 1, `Em Curso` 2, `Finalizado` 3, `Unido` 4,
+`Cancelado` 5, `Bloqueado` 6 (decisão do negócio, 2026-11-26). **A tabela
+é nossa**: nem a doc do Fusion (só texto, `listaCargas`) nem o catálogo
+do CISS (comentário da coluna copiado do de entregas, sem tabela de
+domínio, sem histórico — o integrador nativo guardava o texto) definem
+o inteiro. Ordem da doc do `listaCargas`; `Bloqueado` aparece em
+produção mas não na doc. Situação fora da tabela → `NULL` + aviso. As
+176 linhas gravadas antes disso foram preenchidas por backfill (só
+`UPDATE` da coluna, onde nula).
 
 Limitação de fonte: `getIntErp` só dispara na montagem/resequenciamento
 do romaneio — `KMREALIZADO`/`DATAINICIO`/`DATATERMINO` e status ao longo

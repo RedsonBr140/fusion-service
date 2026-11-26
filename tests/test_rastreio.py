@@ -164,7 +164,7 @@ def test_mapeia_pendencia_para_todas_as_colunas():
     assert linha["NUMEROCLIENTES"] == 2
     assert linha["DATASAIDAPREVISTA"] == datetime(2026, 11, 27, 7, 0)
     assert linha["DATACANCELAMENTO"] is None  # "0000-00-00 ..." não é data
-    assert linha["STATUSROMANEIO"] is None  # mapeamento texto→inteiro ainda não definido
+    assert linha["STATUSROMANEIO"] == 1  # "Ativo"
 
 
 def test_campos_ausentes_viram_null_sem_erro():
@@ -460,6 +460,27 @@ def test_tipo_nao_processado_vira_aviso_sem_mencao_uma_vez(conn, redis_client, m
 
     assert len(avisos) == 1 and "T10_ROMANEIO_CANCELA_CARGA" in avisos[0]
     assert erros == []
+
+
+@pytest.mark.parametrize(
+    "situacao, esperado",
+    [("Ativo", 1), ("Em Curso", 2), ("Finalizado", 3), ("Unido", 4), ("Cancelado", 5), ("Bloqueado", 6),
+     ("em curso", 2), (" Finalizado ", 3), ("", None), (None, None), ("Outro", None)],
+)
+def test_status_romaneio(situacao, esperado):
+    assert rastreio.status_romaneio(situacao) == esperado
+
+
+def test_situacao_desconhecida_grava_nulo_e_avisa_uma_vez(conn, redis_client, monkeypatch):
+    avisos = []
+    monkeypatch.setattr(rastreio.discord, "aviso", lambda url, titulo, descricao=None, campos=None: avisos.append(descricao))
+    escrita = EscritaFalsa()
+    fusion = FusionFalso([[_pendencia(10, t10_situacao="Pausado")]])
+
+    executar(conn, redis_client, fusion, escrita)
+
+    assert escrita.linhas[0]["STATUSROMANEIO"] is None
+    assert len(avisos) == 1 and "Pausado" in avisos[0]
 
 
 # --- Ativo ≠ automático (decisão do negócio, 2026-11-26) -------------------
