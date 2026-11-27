@@ -231,9 +231,18 @@ def create_app(config=None) -> Flask:
         # mostrar (ex. esconder a aba de carga real quando
         # MOSTRAR_CARGAS_CISS=false) — nunca a `Config` inteira, que
         # carrega credencial.
+        cfg = app.config["APP_CONFIG"]
         return jsonify(
-            mostrar_cargas_ciss=app.config["APP_CONFIG"].mostrar_cargas_ciss,
-            somente_pedidos_soltos=app.config["APP_CONFIG"].somente_pedidos_soltos,
+            mostrar_cargas_ciss=cfg.mostrar_cargas_ciss,
+            somente_pedidos_soltos=cfg.somente_pedidos_soltos,
+            # Barra de status do frontend: o que está ligado neste processo
+            # (lido no boot), sem precisar de uma chamada por recurso.
+            auto_envio_ativo=cfg.auto_envio_pre_carga_ativo,
+            rastreio_ativo=cfg.rastreio_int_erp_ativo,
+            rastreio_automatico=cfg.rastreio_int_erp_ativo and cfg.rastreio_int_erp_automatico,
+            ciss_db_configurado=cfg.ciss_db is not None,
+            fusion_configurado=cfg.fusion is not None,
+            fusion_portal_configurado=cfg.fusion_portal is not None,
         )
 
     @app.route("/", defaults={"caminho": ""})

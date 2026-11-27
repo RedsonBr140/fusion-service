@@ -1,8 +1,27 @@
-import { LoaderCircle } from "lucide-react";
-import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import {
+  Activity,
+  BarChart3,
+  History,
+  Info,
+  LoaderCircle,
+  Radar,
+  Settings,
+  Truck,
+  Users,
+} from "lucide-react";
+import { useEffect, useState } from "react";
 
+import { getSetupStatus } from "@/api";
+import {
+  BarraStatus,
+  BarraTitulo,
+  CabecalhoPainel,
+  JanelaCentral,
+  Lateral,
+  type ItemNavegacao,
+} from "@/components/shell";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { AdministracaoSection } from "@/tools/cargas_fusion/AdministracaoSection";
 import { BuscaCargasSection } from "@/tools/cargas_fusion/BuscaCargasSection";
 import { CadastroPessoaSection } from "@/tools/cargas_fusion/CadastroPessoaSection";
@@ -26,16 +45,74 @@ import { useFusionServiceAuth } from "@/tools/cargas_fusion/useFusionServiceAuth
 
 type Secao = "busca" | "historico" | "rastreio" | "metricas" | "diagnostico" | "ajudantes" | "administracao";
 
-const ABAS: { chave: Secao; rotulo: string }[] = [
-  { chave: "busca", rotulo: "Buscar cargas" },
-  { chave: "historico", rotulo: "Histórico" },
-  { chave: "rastreio", rotulo: "Rastreio (getIntErp)" },
-  { chave: "metricas", rotulo: "Métricas" },
-  { chave: "diagnostico", rotulo: "Diagnóstico" },
-  { chave: "ajudantes", rotulo: "Ajudantes" },
+const NAVEGACAO: (ItemNavegacao<Secao> & { descricao: string })[] = [
+  {
+    chave: "busca",
+    rotulo: "Cargas e pré-cargas",
+    icone: Truck,
+    grupo: "Operação",
+    descricao: "Buscar no CISSPoder e enviar ao Fusion.",
+  },
+  {
+    chave: "historico",
+    rotulo: "Histórico de envios",
+    icone: History,
+    grupo: "Operação",
+    descricao: "O que já foi mandado ao Fusion, e o que falhou.",
+  },
+  {
+    chave: "rastreio",
+    rotulo: "Rastreio",
+    icone: Radar,
+    grupo: "Integração",
+    descricao: "Fusion → CISS: getIntErp, entregas e eventos gravados em DBA.*_FUSION_TRACK.",
+  },
+  {
+    chave: "metricas",
+    rotulo: "Métricas",
+    icone: BarChart3,
+    grupo: "Integração",
+    descricao: "Volume de envio e pré-cargas fora do escopo automático.",
+  },
+  {
+    chave: "diagnostico",
+    rotulo: "Ciclo automático",
+    icone: Activity,
+    grupo: "Integração",
+    descricao: "Estado, controle e duração do ciclo de envio automático.",
+  },
+  {
+    chave: "ajudantes",
+    rotulo: "Ajudantes",
+    icone: Users,
+    grupo: "Cadastros",
+    descricao: "Cadastro local de ajudantes, sincronizado com o Fusion.",
+  },
 ];
 
-const ABA_ADMIN = { chave: "administracao" as const, rotulo: "Administração" };
+const ADMINISTRACAO = {
+  chave: "administracao" as const,
+  rotulo: "Administração",
+  icone: Settings,
+  grupo: "Sistema",
+  descricao: "Configuração da integração e usuários com acesso.",
+};
+
+/** Usuário logado mas não admin, numa instalação sem admin: sem isto, o
+ * caminho pro setup só existia na tela de login. */
+function AvisoSetupPendente({ onSetup }: { onSetup: () => void }) {
+  const setup = useQuery({ queryKey: ["setup-status"], queryFn: getSetupStatus });
+  if (!setup.data?.necessario) return null;
+  return (
+    <div className="flex shrink-0 items-center gap-2 border-b border-border bg-info/10 px-4 py-1.5 text-xs">
+      <Info className="size-3.5 text-info-text" />
+      <span>Esta instalação ainda não tem administrador.</span>
+      <Button type="button" size="xs" variant="outline" className="ml-auto" onClick={onSetup}>
+        Fazer o setup inicial
+      </Button>
+    </div>
+  );
+}
 
 export function CargasFusionPage() {
   const fusionAuth = useFusionServiceAuth();
@@ -48,96 +125,104 @@ export function CargasFusionPage() {
     idPlanilha: number;
   } | null>(null);
 
+  const admin = fusionAuth.status === "ready" && fusionAuth.user.admin;
+  const itens = admin ? [...NAVEGACAO, ADMINISTRACAO] : NAVEGACAO;
+  const atual = itens.find((i) => i.chave === secao) ?? itens[0];
+
+  // Alt+1..9 troca de seção, como atalho de aplicativo desktop.
+  useEffect(() => {
+    if (fusionAuth.status !== "ready") return;
+    const ouvir = (e: KeyboardEvent) => {
+      if (!e.altKey || e.ctrlKey || e.metaKey) return;
+      const indice = Number(e.key) - 1;
+      if (Number.isInteger(indice) && indice >= 0 && indice < itens.length) {
+        e.preventDefault();
+        setSecao(itens[indice].chave);
+      }
+    };
+    window.addEventListener("keydown", ouvir);
+    return () => window.removeEventListener("keydown", ouvir);
+  }, [fusionAuth.status, itens]);
+
   function abrirCargaDoHistorico(idEmpresa: number, idPlanilha: number) {
     setCargaNoHistorico({ idEmpresa, idPlanilha });
     setSecao("busca");
   }
 
-  return (
-    <div className="min-h-screen bg-background p-8">
-      <Card className="mx-auto max-w-5xl">
-        <CardHeader>
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <CardTitle className="text-2xl tracking-tight">Cargas Fusion</CardTitle>
-              <p className="text-sm text-muted-foreground">
-                Buscar cargas e pré-cargas no CISSPoder e integrá-las ao Fusion.
-                Motorista e veículo vêm direto do Fusion; ajudante vem de um
-                cadastro próprio — não do CISS a cada busca.
-              </p>
-            </div>
-            {fusionAuth.status === "ready" && (
-              <div className="flex shrink-0 items-center gap-2">
-                <span className="text-sm text-muted-foreground">{fusionAuth.user.name}</span>
-                <Button type="button" variant="outline" size="sm" onClick={fusionAuth.sair}>
-                  Sair
-                </Button>
-              </div>
-            )}
+  if (fusionAuth.status !== "ready") {
+    return (
+      <div className="flex h-full flex-col">
+        <BarraTitulo />
+        {fusionAuth.status === "restaurando" && (
+          <div className="flex flex-1 items-center justify-center gap-2 text-sm text-muted-foreground">
+            <LoaderCircle className="size-4 animate-spin" /> Restaurando sessão…
           </div>
-        </CardHeader>
-
-        <CardContent className="flex flex-col gap-6">
-          {fusionAuth.status === "restaurando" && (
-            <p className="flex items-center gap-2 text-sm text-muted-foreground">
-              <LoaderCircle className="animate-spin size-4" /> Restaurando sessão...
-            </p>
-          )}
-
-          {fusionAuth.status === "precisa-login" && (
+        )}
+        {fusionAuth.status === "precisa-login" && (
+          <JanelaCentral titulo="Entrar">
             <FusionServiceLoginForm
               loginDireto={fusionAuth.loginDireto}
               mensagemInicial={fusionAuth.mensagem}
               onSetup={fusionAuth.setupDisponivel ? fusionAuth.irParaSetup : undefined}
             />
-          )}
-
-          {fusionAuth.status === "setup" && (
+          </JanelaCentral>
+        )}
+        {fusionAuth.status === "setup" && (
+          <JanelaCentral titulo="Setup inicial">
             <SetupInicialForm
               cissApiUrlInicial={fusionAuth.cissApiUrl}
               fazerSetup={fusionAuth.fazerSetup}
               voltarParaLogin={fusionAuth.voltarParaLogin}
             />
-          )}
+          </JanelaCentral>
+        )}
+        <BarraStatus />
+      </div>
+    );
+  }
 
-          {fusionAuth.status === "ready" && (
-            <>
-              <EnvioAutomaticoStatus />
-
-              <div className="flex flex-wrap gap-2 border-b border-border pb-4">
-                {[...ABAS, ...(fusionAuth.user.admin ? [ABA_ADMIN] : [])].map((aba) => (
-                  <Button
-                    key={aba.chave}
-                    type="button"
-                    variant={secao === aba.chave ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => setSecao(aba.chave)}
-                  >
-                    {aba.rotulo}
-                  </Button>
-                ))}
-              </div>
-
-              {secao === "busca" && (
+  return (
+    <div className="flex h-full flex-col">
+      <BarraTitulo usuario={fusionAuth.user} onSair={fusionAuth.sair} />
+      {!admin && <AvisoSetupPendente onSetup={fusionAuth.irParaSetup} />}
+      <div className="flex min-h-0 flex-1">
+        <Lateral itens={itens} ativo={atual.chave} onSelecionar={setSecao} />
+        <main className="flex min-w-0 flex-1 flex-col">
+          <CabecalhoPainel titulo={atual.rotulo} descricao={atual.descricao} icone={atual.icone} />
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <div className="flex flex-col gap-4 p-5">
+              {atual.chave === "busca" && (
                 <BuscaCargasSection
                   cargaPreSelecionada={cargaNoHistorico}
                   mostrarCargasCiss={mostrarCargasCiss}
                   somentePedidosSoltos={somentePedidosSoltos}
                 />
               )}
-              {secao === "historico" &&
+              {atual.chave === "historico" &&
                 (mostrarCargasCiss ? (
                   <HistoricoSection onAbrirCarga={abrirCargaDoHistorico} />
                 ) : (
                   <HistoricoPreCargaSection />
                 ))}
-              {secao === "rastreio" && <RastreioSection />}
-              {secao === "administracao" && fusionAuth.user.admin && (
-                <AdministracaoSection eu={fusionAuth.user.username} />
+              {atual.chave === "rastreio" && <RastreioSection />}
+              {atual.chave === "metricas" && <MetricasSection />}
+              {atual.chave === "diagnostico" && (
+                <>
+                  {appConfig.data?.auto_envio_ativo ? (
+                    <EnvioAutomaticoStatus />
+                  ) : (
+                    // O widget só olha a pausa: com o recurso desligado na
+                    // configuração ele dizia "ativo" sem nada rodar.
+                    <p className="flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-sm text-muted-foreground">
+                      <Info className="size-4 shrink-0" />
+                      Envio automático desligado nesta instalação
+                      {admin ? " — ligue em Administração → Recursos." : "."}
+                    </p>
+                  )}
+                  <DiagnosticoSection />
+                </>
               )}
-              {secao === "metricas" && <MetricasSection />}
-              {secao === "diagnostico" && <DiagnosticoSection />}
-              {secao === "ajudantes" && (
+              {atual.chave === "ajudantes" && (
                 <CadastroPessoaSection
                   tipo="ajudante"
                   listar={useAjudantes}
@@ -148,10 +233,12 @@ export function CargasFusionPage() {
                   mostrarCamposExtras={false}
                 />
               )}
-            </>
-          )}
-        </CardContent>
-      </Card>
+              {atual.chave === "administracao" && admin && <AdministracaoSection eu={fusionAuth.user.username} />}
+            </div>
+          </div>
+        </main>
+      </div>
+      <BarraStatus config={appConfig.data} />
     </div>
   );
 }

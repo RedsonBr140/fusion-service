@@ -493,7 +493,7 @@ export function BuscaCargasSection({
           <Label htmlFor="filtro-empresa">Empresa</Label>
           <select
             id="filtro-empresa"
-            className="h-9 w-48 rounded-md border border-input bg-transparent px-3 text-sm"
+            className="h-8 w-48 rounded-md border border-input bg-card px-2.5 text-sm shadow-xs dark:bg-input/30"
             value={filtroEmpresaId ?? ""}
             onChange={(e) => setFiltroEmpresaId(e.target.value ? Number(e.target.value) : null)}
           >

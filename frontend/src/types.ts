@@ -55,6 +55,13 @@ export interface AppConfig {
    * pré-carga ao Fusion" (os dois caminhos que empacotam num
    * `cargas[]`/`saveCarga`), deixando só "Enviar pedido solto". */
   somente_pedidos_soltos: boolean;
+  /** O que está ligado neste processo (lido no boot) — barra de status. */
+  auto_envio_ativo: boolean;
+  rastreio_ativo: boolean;
+  rastreio_automatico: boolean;
+  ciss_db_configurado: boolean;
+  fusion_configurado: boolean;
+  fusion_portal_configurado: boolean;
 }
 
 export interface CargaResumo {

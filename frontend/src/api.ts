@@ -116,6 +116,11 @@ export function getMe(): Promise<{ user: UsuarioSessao }> {
   return request("/api/me");
 }
 
+/** Sem sessão — a barra de status usa pra mostrar se o backend responde. */
+export function getHealth(): Promise<{ status: string }> {
+  return request("/api/health");
+}
+
 // --- Setup inicial (sem sessão) -------------------------------------------
 
 export function getSetupStatus(): Promise<{ necessario: boolean; ciss_api_url: string | null }> {
