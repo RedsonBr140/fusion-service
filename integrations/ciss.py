@@ -889,9 +889,66 @@ class CissClient:
             "DBA.ENTREGAS_FUSION_TRACK",
             "DBA.EVENTOS_FUSION_TRACK",
             "DBA.ITENS_DEVOLVIDOS_FUSION_TRACK",
+            "DBA.CARGAS_CISS_FUSION_TRACK",
         }
     )
     _LOTE_IN = 200
+
+    # Cabeçalho da carga (`RETIRADA_PRODUTOS`) de um item retirado — com o
+    # mesmo fallback por IDEMPRESABAIXAEST de `get_carga_por_pedido`: numa
+    # entrega entre filiais o item mora sob outra empresa, e a carga é a do
+    # cabeçalho (CLAUDE.md, "Entrega entre filiais").
+    _SQL_CARGA_DO_ITEM = (
+        "SELECT DISTINCT RP.IDEMPRESA, RP.IDPLANILHA "
+        "FROM PRODUTO_RETIRADO PR "
+        "JOIN RETIRADA_PRODUTOS RP ON RP.IDPLANILHA = PR.IDPLANILHA "
+        "  AND (RP.IDEMPRESA = PR.IDEMPRESA OR (RP.IDEMPRESA = PR.IDEMPRESABAIXAEST "
+        "AND NOT EXISTS (SELECT 1 FROM RETIRADA_PRODUTOS RP_OWN "
+        "WHERE RP_OWN.IDEMPRESA = PR.IDEMPRESA AND RP_OWN.IDPLANILHA = PR.IDPLANILHA))) "
+    )
+    _SQL_VIA_ORCAMENTO = (
+        "JOIN ORCAMENTO_PRE_NOTA OPN ON OPN.IDEMPRESAPRENOTA = PR.IDEMPRESA "
+        "AND OPN.IDPLANILHAPRENOTA = PR.IDPLANILHADOCORI "
+    )
+    _SQL_CARGAS_DA_PRE_CARGA = (
+        "PR.IDPLANILHA IN (SELECT PCP.IDPLANILHARETIRADA FROM PRE_CARGA_PROD PCP WHERE PCP.IDPRECARGA = ?) "
+    )
+
+    def get_cargas_ciss_do_pedido(
+        self,
+        formato: str,
+        *,
+        id_orcamento: int | None = None,
+        id_pre_nota: int | None = None,
+        id_empresa: int | None = None,
+        id_planilha_carga: int | None = None,
+        id_precarga: int | None = None,
+    ) -> list[tuple[int, int]]:
+        """Cargas do CISS `(IDEMPRESA, IDPLANILHA)` que carregam este pedido,
+        pelo formato do código que mandamos ao Fusion — mesmas cadeias de
+        `get_nfs_por_*`, mas sem passar pela NF (pré-carga aparece assim que
+        o CISS forma a carga, antes de faturar). Lista vazia = ainda não há
+        carga no CISS."""
+        sql = self._SQL_CARGA_DO_ITEM
+        params: list[object] = []
+        if formato in ("carga", "pre_carga"):
+            sql += self._SQL_VIA_ORCAMENTO + "WHERE OPN.IDORCAMENTO = ? "
+            params.append(id_orcamento)
+        elif formato in ("nativo", "pre_nota"):
+            sql += "WHERE PR.IDEMPRESA = ? AND PR.IDPLANILHADOCORI = ? "
+            params += [id_empresa, id_pre_nota]
+        else:
+            raise ValueError(f"Formato de pedido desconhecido: {formato}")
+        # Um pedido pode ter ido em mais de uma carga (redespacho): o código
+        # diz qual, quando sabe.
+        if id_planilha_carga is not None:
+            sql += "AND PR.IDPLANILHA = ? "
+            params.append(id_planilha_carga)
+        if id_precarga is not None:
+            sql += "AND " + self._SQL_CARGAS_DA_PRE_CARGA
+            params.append(id_precarga)
+        linhas = self._fetch_all(sql + "ORDER BY RP.IDEMPRESA, RP.IDPLANILHA", params)
+        return [(int(l["IDEMPRESA"]), int(l["IDPLANILHA"])) for l in linhas]
 
     def ler_track(
         self,

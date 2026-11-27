@@ -195,6 +195,18 @@ def _gravar_evento_track(args, kwargs, resultado) -> tuple[str, Campos]:
     return "🛰️ CISS · EVENTOS_FUSION_TRACK", campos
 
 
+def _sincronizar_cargas_ciss(args, kwargs, resultado) -> tuple[str, Campos]:
+    romaneio = args[0] if args else kwargs.get("id_carga_fusion")
+    inserir = (args[1] if len(args) > 1 else kwargs.get("inserir")) or []
+    remover = (args[2] if len(args) > 2 else kwargs.get("remover")) or []
+    campos: Campos = [("Romaneio", f"`{romaneio}`", True)]
+    if inserir:
+        campos.append(("Vinculadas", _lista(f"{e}_{c}" for e, c in inserir), False))
+    if remover:
+        campos.append(("Removidas", _lista(f"{e}_{c}" for e, c in remover), False))
+    return "🔗 CISS · CARGAS_CISS_FUSION_TRACK", campos
+
+
 FORMATADORES: dict[str, Callable] = {
     "save_carga": _save_carga,
     "save_entrega_servico": _save_entrega_servico,
@@ -207,6 +219,7 @@ FORMATADORES: dict[str, Callable] = {
     "upsert_carga_fusion_track": _upsert_carga_track,
     "upsert_entrega_fusion_track": _upsert_entrega_track,
     "gravar_evento_fusion_track": _gravar_evento_track,
+    "sincronizar_cargas_ciss": _sincronizar_cargas_ciss,
 }
 
 

@@ -52,6 +52,13 @@ def _migrar(conn: sqlite3.Connection) -> None:
     (`auth/setup.py`) fica disponível até alguém reivindicar."""
     if _tabela_existe(conn, "usuarios_locais") and "admin" not in _colunas(conn, "usuarios_locais"):
         conn.execute("ALTER TABLE usuarios_locais ADD COLUMN admin INTEGER NOT NULL DEFAULT 0")
+    if _tabela_existe(conn, "cargas_fusion_entrega_track"):
+        colunas = _colunas(conn, "cargas_fusion_entrega_track")
+        # Vínculo romaneio ↔ carga do CISS (cargas_fusion/rastreio_cargas_ciss.py).
+        if "cargas_ciss" not in colunas:
+            conn.execute("ALTER TABLE cargas_fusion_entrega_track ADD COLUMN cargas_ciss TEXT")
+        if "cargas_ciss_em" not in colunas:
+            conn.execute("ALTER TABLE cargas_fusion_entrega_track ADD COLUMN cargas_ciss_em TEXT")
     if _tabela_existe(conn, "cargas_fusion_precarga_fila"):
         colunas = _colunas(conn, "cargas_fusion_precarga_fila")
         if "veiculo_codigo_erp" not in colunas:

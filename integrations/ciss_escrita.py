@@ -41,8 +41,16 @@ TABELAS_ESCRITA_PERMITIDAS = frozenset(
         "DBA.ENTREGAS_FUSION_TRACK",
         "DBA.EVENTOS_FUSION_TRACK",
         "DBA.ITENS_DEVOLVIDOS_FUSION_TRACK",
+        "DBA.CARGAS_CISS_FUSION_TRACK",
     }
 )
+
+# DELETE só aqui (decisão do negócio, 2026-11-27): o vínculo romaneio ↔
+# carga do CISS espelha o conteúdo atual do romaneio, e uma carga que sai
+# dele precisa sair da tabela. Sempre `DELETE FROM ... WHERE ...` (nunca
+# sem WHERE) — o único SQL que usa isto é `SQL_DELETE_CARGA_CISS_FUSION`,
+# pela chave primária inteira.
+TABELAS_DELETE_PERMITIDO = frozenset({"DBA.CARGAS_CISS_FUSION_TRACK"})
 
 _VERBOS_PROIBIDOS_ESCRITA = frozenset(
     {
@@ -62,6 +70,7 @@ _VERBOS_PROIBIDOS_ESCRITA = frozenset(
 _ALVO_ESCRITA = re.compile(
     r"(?:MERGE\s+INTO|INSERT\s+INTO|UPDATE)\s+([A-Z_][A-Z_0-9]*\s*\.\s*[A-Z_][A-Z_0-9]*)\b"
 )
+_ALVO_DELETE = re.compile(r"DELETE\s+FROM\s+([A-Z_][A-Z_0-9]*\s*\.\s*[A-Z_][A-Z_0-9]*)\b")
 _PALAVRA = re.compile(r"[A-Z_][A-Z_0-9]*")
 
 
@@ -77,15 +86,29 @@ def validate_escrita_permitida(sql: str) -> None:
         raise EscritaNaoPermitida("Comandos empilhados não são aceitos.")
 
     maiusculo = limpo.upper()
-    alvo = _ALVO_ESCRITA.match(maiusculo)
-    if alvo is None:
-        raise EscritaNaoPermitida("Só MERGE INTO / INSERT INTO / UPDATE são aceitos.")
+    proibidos = _VERBOS_PROIBIDOS_ESCRITA
+    remocao = _ALVO_DELETE.match(maiusculo)
+    if remocao is not None:
+        tabela = re.sub(r"\s+", "", remocao.group(1))
+        if tabela not in TABELAS_DELETE_PERMITIDO:
+            raise EscritaNaoPermitida(f"DELETE não permitido em {tabela}")
+        if not re.search(r"\bWHERE\b", maiusculo):
+            raise EscritaNaoPermitida("DELETE sem WHERE não é aceito.")
+        # O DELETE do começo é o próprio comando; qualquer outro verbo proibido não.
+        proibidos = proibidos - {"DELETE"}
+        resto = maiusculo[remocao.end():]
+        if "DELETE" in set(_PALAVRA.findall(resto)):
+            raise EscritaNaoPermitida("Comando rejeitado: DELETE")
+        maiusculo = resto
+    else:
+        alvo = _ALVO_ESCRITA.match(maiusculo)
+        if alvo is None:
+            raise EscritaNaoPermitida("Só MERGE INTO / INSERT INTO / UPDATE (e DELETE onde permitido) são aceitos.")
+        tabela = re.sub(r"\s+", "", alvo.group(1))
+        if tabela not in TABELAS_ESCRITA_PERMITIDAS:
+            raise EscritaNaoPermitida(f"Tabela fora da allow-list de escrita: {tabela}")
 
-    tabela = re.sub(r"\s+", "", alvo.group(1))
-    if tabela not in TABELAS_ESCRITA_PERMITIDAS:
-        raise EscritaNaoPermitida(f"Tabela fora da allow-list de escrita: {tabela}")
-
-    encontrados = _VERBOS_PROIBIDOS_ESCRITA & set(_PALAVRA.findall(maiusculo))
+    encontrados = proibidos & set(_PALAVRA.findall(maiusculo))
     if encontrados:
         raise EscritaNaoPermitida(f"Comando rejeitado: {', '.join(sorted(encontrados))}")
 
@@ -231,6 +254,32 @@ SQL_MERGE_ITENS_DEVOLVIDOS_FUSION_TRACK = _sql_merge(
 )
 
 
+# Vínculo romaneio do Fusion ↔ carga do CISS (`RETIRADA_PRODUTOS`), muitos
+# pra muitos: PK = as três colunas; FK pro romaneio em CARGAS_FUSION_TRACK.
+# DDL em docs/ddl/CARGAS_CISS_FUSION_TRACK.sql. Ver
+# cargas_fusion/rastreio_cargas_ciss.py.
+COLUNAS_CARGAS_CISS_FUSION_TRACK: tuple[tuple[str, str], ...] = (
+    ("IDEMPRESA", "INTEGER"),
+    ("IDCARGACISS", "INTEGER"),
+    ("IDCARGAFUSION", "INTEGER"),
+)
+CHAVE_CARGAS_CISS = ("IDEMPRESA", "IDCARGACISS", "IDCARGAFUSION")
+
+# Toda coluna é chave: não há o que atualizar, só inserir se faltar.
+SQL_INSERIR_CARGA_CISS_FUSION = (
+    "MERGE INTO DBA.CARGAS_CISS_FUSION_TRACK T "
+    "USING (VALUES (CAST(? AS INTEGER), CAST(? AS INTEGER), CAST(? AS INTEGER))) "
+    "AS S (IDEMPRESA, IDCARGACISS, IDCARGAFUSION) "
+    "ON T.IDEMPRESA = S.IDEMPRESA AND T.IDCARGACISS = S.IDCARGACISS AND T.IDCARGAFUSION = S.IDCARGAFUSION "
+    "WHEN NOT MATCHED THEN INSERT (IDEMPRESA, IDCARGACISS, IDCARGAFUSION) "
+    "VALUES (S.IDEMPRESA, S.IDCARGACISS, S.IDCARGAFUSION)"
+)
+SQL_DELETE_CARGA_CISS_FUSION = (
+    "DELETE FROM DBA.CARGAS_CISS_FUSION_TRACK "
+    "WHERE IDEMPRESA = ? AND IDCARGACISS = ? AND IDCARGAFUSION = ?"
+)
+
+
 # Chave de cada tabela, na ordem das colunas — usada pra casar a linha
 # nova com a que já está no DB2 (`linha_identica`).
 CHAVE_CARGAS = ("IDCARGAFUSION",)
@@ -340,6 +389,26 @@ class CissEscritaClient:
             for item in itens
         ]
         self._executar_lote(comandos)
+
+    def sincronizar_cargas_ciss(
+        self,
+        id_carga_fusion: int,
+        inserir: Sequence[tuple[int, int]],
+        remover: Sequence[tuple[int, int]] = (),
+    ) -> None:
+        """Vínculos `(IDEMPRESA, IDCARGACISS)` de um romaneio: insere os que
+        faltam e remove os que saíram, **numa transação só** — nunca um
+        romaneio com metade da troca aplicada."""
+        comandos = [
+            (SQL_INSERIR_CARGA_CISS_FUSION, [int(empresa), int(carga), int(id_carga_fusion)])
+            for empresa, carga in inserir
+        ]
+        comandos += [
+            (SQL_DELETE_CARGA_CISS_FUSION, [int(empresa), int(carga), int(id_carga_fusion)])
+            for empresa, carga in remover
+        ]
+        if comandos:
+            self._executar_lote(comandos)
 
     def _executar(self, sql: str, params: Sequence[object] = ()) -> None:
         self._executar_lote([(sql, params)])

@@ -93,6 +93,9 @@ class CissFalso:
     def get_nfs_por_pre_nota_direta(self, *a):
         return self._r("direta", *a)
 
+    def get_cargas_ciss_do_pedido(self, formato, **kw):
+        return []
+
 
 class FusionFalso:
     def __init__(self, detalhe=None):
@@ -114,6 +117,9 @@ class EscritaFalsa:
         if self.erro:
             raise self.erro
         self.linhas.append(linha)
+
+    def sincronizar_cargas_ciss(self, id_carga_fusion, inserir, remover=()):
+        pass
 
 
 def _romaneio(conn, t10_id=816622, entregas=None, codigo_int=1, **extra):

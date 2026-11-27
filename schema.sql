@@ -232,6 +232,11 @@ CREATE TABLE IF NOT EXISTS cargas_fusion_entrega_track (
     tentativas      INTEGER NOT NULL DEFAULT 0,
     gravada_em      TEXT,
     atualizado_em   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    -- Cargas do CISS que carregam este pedido, JSON [[IDEMPRESA, IDPLANILHA], ...]
+    -- (rastreio_cargas_ciss). NULL = ainda não consultado; [] = consultado e
+    -- ainda sem carga (pré-carga não formada), reconsultado depois.
+    cargas_ciss     TEXT,
+    cargas_ciss_em  TEXT,
     PRIMARY KEY (t10_id, pedido_erp)
 );
 

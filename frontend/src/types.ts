@@ -513,6 +513,21 @@ export interface ResultadoCicloRastreio {
   eventos?:
     | (Partial<Record<StatusEventoRastreio | "SEM_MUDANCA", number>> & { recebidos?: number; restantes?: number })
     | null;
+  /** Vínculo romaneio ↔ carga do CISS (DBA.CARGAS_CISS_FUSION_TRACK).
+   * `indisponivel` = tabela ainda não criada/ilegível: etapa pulada. */
+  cargas_ciss?:
+    | { status: "indisponivel" }
+    | {
+        status: "executado";
+        VINCULADAS: number;
+        REMOVIDAS: number;
+        ERRO: number;
+        consultadas?: number;
+        sem_carga?: number;
+        erro_consulta?: number;
+        restantes?: number;
+      }
+    | null;
   erro_coleta?: string | null;
   duracao_ms?: number;
 }

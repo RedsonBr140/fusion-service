@@ -16,7 +16,11 @@ funções.
   de escrita. Escrita só em `integrations/ciss_escrita.py`, SQL fixo por
   método e allow-list de tabela em `validate_escrita_permitida` (hoje só
   `DBA.CARGAS_FUSION_TRACK`, `DBA.ENTREGAS_FUSION_TRACK`,
-  `DBA.EVENTOS_FUSION_TRACK` e `DBA.ITENS_DEVOLVIDOS_FUSION_TRACK`). A conexão é como `DBA` (decisão do
+  `DBA.EVENTOS_FUSION_TRACK`, `DBA.ITENS_DEVOLVIDOS_FUSION_TRACK` e
+  `DBA.CARGAS_CISS_FUSION_TRACK`). Só MERGE/INSERT/UPDATE — com **uma**
+  exceção de DELETE, só em `DBA.CARGAS_CISS_FUSION_TRACK`, sempre com
+  `WHERE` (`TABELAS_DELETE_PERMITIDO`, decisão do negócio 2026-11-27, ver
+  "Vínculo romaneio ↔ carga do CISS"). A conexão é como `DBA` (decisão do
   negócio), então a permissão do DB2 não protege nada — a allow-list é a
   única defesa, e ampliá-la é decisão de negócio, não de código. O
   `saveCarga` do Fusion é escrita em outro sistema (SOAP), não no CISS.
@@ -801,6 +805,48 @@ gerando um embed no canal de atividade do Discord.
 - Dentro do mesmo ciclo, o que acabou de ser gravado entra no mapa de
   existentes: duas pendências iguais do mesmo romaneio (MONTAGEM e depois
   ROTEIRIZADO) gravam uma vez só.
+
+### Vínculo romaneio ↔ carga do CISS: `CARGAS_CISS_FUSION_TRACK`
+
+`cargas_fusion/rastreio_cargas_ciss.py`, etapa do mesmo ciclo depois das
+entregas. `(IDEMPRESA, IDCARGACISS, IDCARGAFUSION)`, PK nas três, FK pro
+romaneio — o `1_21312456` vira `IDEMPRESA=1`, `IDCARGACISS=21312456`.
+Muitos pra muitos (52 de 90 romaneios com valor em staging levam mais de
+uma carga). DDL em `docs/ddl/CARGAS_CISS_FUSION_TRACK.sql` — a tabela é
+criada à mão (o serviço não roda DDL); enquanto não existe, a leitura
+falha e a etapa só pula (`{"status": "indisponivel"}`), sem alerta.
+
+- **Fonte = Fusion + CISS, unidos** (decisão do negócio). Fusion:
+  `t10_cargas_erp` (lista por vírgula) e `ENTREGAS[].t32_carga_erp`, só o
+  formato `N_N` — descarta `PC_…` (carga empacotada de pré-carga) e o
+  próprio `t10_id`, que volta nesses campos por causa do contorno do
+  `setIntErp`. CISS: o código de cada entrega leva à carga do item
+  (`CissClient.get_cargas_ciss_do_pedido`, mesmas cadeias das NFs, sem
+  passar pela NF; mesmo fallback por `IDEMPRESABAIXAEST` com `NOT EXISTS`
+  de `get_carga_por_pedido` — devolve o cabeçalho). É o único caminho do
+  fluxo corrente: pedido solto deixa os campos do Fusion vazios (1781 de
+  2096 entregas em staging).
+- **Medido em staging (2026-11-27)**: 1049 de 1071 entregas acham carga no
+  CISS (~4 ms por consulta); as 22 sem carga são quase todas pré-carga
+  ainda não formada (reconsultadas a cada ciclo, até 200 consultas/ciclo).
+  Onde o Fusion também informa, 98 de 107 batem. **As 9 que divergem são
+  `IDPLANILHA` colidindo entre empresas** (`9_22153768` no Fusion vs.
+  `2_22153768` no CISS): dois cabeçalhos, um conjunto só de itens
+  (`IDEMPRESA=2`, `IDEMPRESABAIXAEST=9`), gravados 18 ms depois do cabeçalho
+  9. Qual dos dois "é dono" é ambíguo de verdade — com a união, o romaneio
+  fica vinculado aos dois. Mesmo padrão de `9_22160293` (seção "O `OR
+  IDEMPRESABAIXAEST` duplicava pedido"), cuja conclusão (dono = cabeçalho
+  com match direto) **não é conclusiva** pra esse padrão: revisitar se a
+  dúvida importar.
+- **Espelho exato** (decisão do negócio): insere o que falta, remove o que
+  saiu do romaneio, numa transação por romaneio
+  (`CissEscritaClient.sincronizar_cargas_ciss`). **Remoção só com o
+  romaneio conhecido por inteiro**: entrega ainda não consultada
+  (`cargas_ciss` NULL) ou consulta com erro bloqueia a remoção naquele
+  romaneio — falha de leitura nunca apaga vínculo válido.
+- Só romaneio dentro da janela de reatualização (30 dias); depois o vínculo
+  congela. Falha de gravação fica no resumo/log, sem alerta (retenta todo
+  ciclo).
 
 DB2: marcador `?` sem tipo não é aceito em `MERGE ... USING (VALUES ...)`
 (SQL0418N) — todo parâmetro vai com `CAST` explícito

@@ -43,7 +43,12 @@ logger = logging.getLogger(__name__)
 
 # Formatos de `t32_pedido_original`, um por origem de envio.
 _NATIVO = re.compile(r"(\d+)@(\d+)@\d+@\d+")  # integrador nativo: pré-nota@empresa@x@y
-_PRE_NOTA = re.compile(r"PN(\d+)_\S+")  # sem orçamento: PN{pré-nota}_{sufixo}
+_PRE_NOTA = re.compile(r"PN(\d+)_(\S+)")  # sem orçamento: PN{pré-nota}_{sufixo}
+# Sufixo = a carga (`{id_planilha}[R{n}]`) ou a pré-carga (`PC{id}`) do envio
+# — só restringe a busca da carga do CISS (`rastreio_cargas_ciss`); a NF
+# desse formato não depende dele.
+_SUFIXO_CARGA = re.compile(r"(\d+)(?:R\d+)?")
+_SUFIXO_PRE_CARGA = re.compile(r"PC(\d+)")
 _PRE_CARGA = re.compile(r"(\d+)_PC(\d+)")  # {IDORCAMENTO}_PC{id_precarga}
 _CARGA = re.compile(r"(\d+)_(\d+)(?:R\d+)?")  # {IDORCAMENTO}_{id_planilha}[R{reenvio}]
 
@@ -75,7 +80,13 @@ def identificar_pedido(pedido_original: str | None, filial: str | None) -> Pedid
         empresa = int(filial) if filial and str(filial).strip().isdigit() else None
         if empresa is None:
             return None
-        return PedidoIdentificado("pre_nota", id_pre_nota=int(m[1]), id_empresa=empresa)
+        carga = _SUFIXO_CARGA.fullmatch(m[2])
+        pre_carga = _SUFIXO_PRE_CARGA.fullmatch(m[2])
+        return PedidoIdentificado(
+            "pre_nota", id_pre_nota=int(m[1]), id_empresa=empresa,
+            id_planilha_carga=int(carga[1]) if carga else None,
+            id_precarga=int(pre_carga[1]) if pre_carga else None,
+        )
     if m := _PRE_CARGA.fullmatch(codigo):
         return PedidoIdentificado("pre_carga", id_orcamento=int(m[1]), id_precarga=int(m[2]))
     if m := _CARGA.fullmatch(codigo):

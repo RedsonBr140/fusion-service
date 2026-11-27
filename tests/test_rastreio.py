@@ -103,6 +103,9 @@ class EscritaFalsa:
             raise self.erro
         self.linhas.append(linha)
 
+    def sincronizar_cargas_ciss(self, id_carga_fusion, inserir, remover=()):
+        self.vinculos = getattr(self, "vinculos", []) + [(id_carga_fusion, list(inserir), list(remover))]
+
 
 def executar(conn, redis_client, fusion, escrita):
     return rastreio.executar_ciclo(

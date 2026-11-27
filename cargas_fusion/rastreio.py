@@ -38,7 +38,7 @@ from integrations import ciss_escrita
 from integrations.ciss_escrita import CissEscritaClient
 from integrations.fusion import FusionClient, FusionError
 
-from . import rastreio_entregas, rastreio_eventos, service
+from . import rastreio_cargas_ciss, rastreio_entregas, rastreio_eventos, service
 
 logger = logging.getLogger(__name__)
 
@@ -431,11 +431,14 @@ def _resumir_ciclo(resultado: dict) -> None:
         k: v for k, v in (resultado.get("eventos") or {}).items() if k not in ("recebidos", "restantes") and v
     }
     recebidos_eventos = (resultado.get("eventos") or {}).get("recebidos", 0)
+    cargas_ciss = {
+        k: v for k, v in (resultado.get("cargas_ciss") or {}).items() if k in ("VINCULADAS", "REMOVIDAS", "ERRO") and v
+    }
     # SEM_MUDANCA conta no resumo, mas sozinho não é "algo aconteceu":
     # um ciclo que só conferiu e não gravou nada não posta no Discord.
     mudou = lambda d: any(v for k, v in d.items() if k != "SEM_MUDANCA")  # noqa: E731
     if not (resultado.get("recebidas") or mudou(processadas) or resultado.get("confirmadas") or mudou(entregas)
-            or mudou(eventos)
+            or mudou(eventos) or cargas_ciss
             or recebidos_eventos):
         return
     descricao = lambda d: " · ".join(f"{k.lower()}: **{v}**" for k, v in sorted(d.items())) or "—"  # noqa: E731
@@ -452,6 +455,7 @@ def _resumir_ciclo(resultado: dict) -> None:
             ("Eventos consumidos (obtemEventos)", recebidos_eventos, True),
             ("Eventos", descricao(eventos), False),
             ("Eventos pra próximos ciclos", (resultado.get("eventos") or {}).get("restantes", 0), True),
+            ("Vínculos carga CISS", descricao(cargas_ciss), False),
             ("Duração", f"{resultado.get('duracao_ms', 0) / 1000:.1f}s", True),
         ],
     )
@@ -549,6 +553,12 @@ def executar_ciclo(
                 conn, ciss_client, fusion_client, escrita_client, alertas, avisos
             )
 
+        # Vínculo romaneio ↔ carga do CISS (DBA.CARGAS_CISS_FUSION_TRACK):
+        # mesma FK pro romaneio; só lê o sqlite e o CISS, nenhuma chamada ao Fusion.
+        cargas_ciss = None
+        if ciss_client is not None:
+            cargas_ciss = rastreio_cargas_ciss.processar(conn, ciss_client, escrita_client, alertas)
+
         # Eventos depois de tudo: mesma FK (romaneio em CARGAS_FUSION_TRACK),
         # e a sequência da entrega vem do payload do romaneio.
         eventos = rastreio_eventos.processar_eventos(
@@ -568,6 +578,7 @@ def executar_ciclo(
             "falhas_confirmacao": falhas_confirmacao,
             "entregas": entregas,
             "eventos": eventos,
+            "cargas_ciss": cargas_ciss,
             "erro_coleta": erro_coleta,
             "duracao_ms": int((time.monotonic() - inicio) * 1000),
         }
