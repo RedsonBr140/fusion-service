@@ -142,9 +142,11 @@ def mapear_evento(evento: dict, payload_romaneio: dict, ordens_historicas: dict[
         "LONGITUDE": r._decimal(evento.get("t15_longitude"), 7),
         "DATAHORA": r._data(evento.get("t15_dataHora")),
         "OBSMOTORISTA": r._texto(evento.get("t15_obsMotorista"), 2000),
-        "DATAREGISTRO": r._data(evento.get("t15_data_registro")),
+        "DATAHORAREGISTRO": r._data(evento.get("t15_data_registro")),
         "IDMOTIVODEVOLUCAO": _motivo(evento),
         "DESCRDEVOLUCAO": r._texto(evento.get("descricao_motivo_devol_reent"), 45),
+        "STATUS": None,  # coluna nova, fonte ainda não decidida pelo negócio
+        "LINKFOTO": r._texto(evento.get("t15_link_foto"), 500),
     }
 
 

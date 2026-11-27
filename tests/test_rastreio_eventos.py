@@ -118,8 +118,18 @@ def test_grava_evento_do_escopo_com_sequencia_da_entrega(conn):
     assert linha["LATITUDE"] == Decimal("-7.9842800") and linha["KMATUAL"] == Decimal("1234.5000000")
     assert linha["DATAHORA"] == datetime(2026, 11, 26, 10, 53, 56)
     assert linha["OBSMOTORISTA"] is None and linha["IDMOTIVODEVOLUCAO"] is None  # "0" = sem motivo
+    assert linha["DATAHORAREGISTRO"] == datetime(2026, 11, 26, 10, 54, 23)
+    assert linha["STATUS"] is None and linha["LINKFOTO"] is None  # link vazio → nulo
     assert itens == []
     assert _status(conn) == {100: "GRAVADO"}
+
+
+def test_link_da_foto_vai_pra_linkfoto(conn):
+    _romaneio(conn)
+    escrita = EscritaFalsa()
+    link = "http://s3-us-west-2.amazonaws.com/fusionfotos/publico/711158/711158_24409427_2026.04.28_10.50.44.jpg"
+    _processar(conn, FusionFalso([[_evento(100, t15_link_foto=link)]]), escrita)
+    assert escrita.gravados[0][0]["LINKFOTO"] == link
 
 
 def test_evento_sem_entrega_vai_com_sequencia_nula(conn):

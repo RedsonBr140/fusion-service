@@ -744,14 +744,16 @@ linha em `CARGAS_FUSION_TRACK` antes). Uma linha por NF por romaneio
   o `getIntErp` dele pode chegar depois. Todo tipo de evento do romaneio
   entra (chegada, entrega, adiamento, canhoto, foto, início/fim...).
 - Mapeamento: `IDEVENTOFUSION = t15_id`, `IDCARGAFUSION = t15_romaneio_id`,
-  descrição/km/lat/long/`dataHora`/`obsMotorista`/`data_registro` diretos,
+  descrição/km/lat/long/`dataHora`/`obsMotorista` diretos,
+  `DATAHORAREGISTRO = t15_data_registro`, `LINKFOTO = t15_link_foto`
+  (vazio → nulo), `STATUS` sempre nulo (coluna nova, 2026-11-26, sem
+  fonte decidida — o evento não tem status próprio),
   `IDMOTIVODEVOLUCAO`/`DESCRDEVOLUCAO` = `t15_motivo_devol_reent_id`
   (`"0"` = sem motivo → nulo) / `descricao_motivo_devol_reent`.
   **`IDENTREGAFUSION` = sequência da entrega** (mesma regra de
   `ENTREGAS_FUSION_TRACK`): `t32_seq_pedido_erp` → `t12_ordemEntrega` no
   payload mais recente do romaneio; nulo em evento sem entrega. O
   `t15_entrega_id` do evento é id interno do Fusion — não usado.
-  `t15_link_foto` não tem coluna (fica só no cru).
 - **Itens devolvidos**: `obtemEventosItensDevolvidos(idEvento)` — só no
   WSDL, fora da doc; leitura pura (repetir devolve o mesmo). Chamado uma
   vez por evento com motivo, resposta crua guardada. Numa devolução
