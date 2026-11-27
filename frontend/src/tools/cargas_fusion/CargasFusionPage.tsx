@@ -3,6 +3,7 @@ import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { AdministracaoSection } from "@/tools/cargas_fusion/AdministracaoSection";
 import { BuscaCargasSection } from "@/tools/cargas_fusion/BuscaCargasSection";
 import { CadastroPessoaSection } from "@/tools/cargas_fusion/CadastroPessoaSection";
 import { DiagnosticoSection } from "@/tools/cargas_fusion/DiagnosticoSection";
@@ -12,6 +13,7 @@ import { HistoricoPreCargaSection } from "@/tools/cargas_fusion/HistoricoPreCarg
 import { HistoricoSection } from "@/tools/cargas_fusion/HistoricoSection";
 import { MetricasSection } from "@/tools/cargas_fusion/MetricasSection";
 import { RastreioSection } from "@/tools/cargas_fusion/RastreioSection";
+import { SetupInicialForm } from "@/tools/cargas_fusion/SetupInicialForm";
 import {
   useAjudantes,
   useAtualizarAjudante,
@@ -22,7 +24,7 @@ import {
 import { useAppConfig } from "@/tools/cargas_fusion/useCargasFusion";
 import { useFusionServiceAuth } from "@/tools/cargas_fusion/useFusionServiceAuth";
 
-type Secao = "busca" | "historico" | "rastreio" | "metricas" | "diagnostico" | "ajudantes";
+type Secao = "busca" | "historico" | "rastreio" | "metricas" | "diagnostico" | "ajudantes" | "administracao";
 
 const ABAS: { chave: Secao; rotulo: string }[] = [
   { chave: "busca", rotulo: "Buscar cargas" },
@@ -33,9 +35,11 @@ const ABAS: { chave: Secao; rotulo: string }[] = [
   { chave: "ajudantes", rotulo: "Ajudantes" },
 ];
 
+const ABA_ADMIN = { chave: "administracao" as const, rotulo: "Administração" };
+
 export function CargasFusionPage() {
   const fusionAuth = useFusionServiceAuth();
-  const appConfig = useAppConfig();
+  const appConfig = useAppConfig(fusionAuth.status === "ready");
   const mostrarCargasCiss = appConfig.data?.mostrar_cargas_ciss ?? false;
   const somentePedidosSoltos = appConfig.data?.somente_pedidos_soltos ?? true;
   const [secao, setSecao] = useState<Secao>("busca");
@@ -84,6 +88,15 @@ export function CargasFusionPage() {
             <FusionServiceLoginForm
               loginDireto={fusionAuth.loginDireto}
               mensagemInicial={fusionAuth.mensagem}
+              onSetup={fusionAuth.setupDisponivel ? fusionAuth.irParaSetup : undefined}
+            />
+          )}
+
+          {fusionAuth.status === "setup" && (
+            <SetupInicialForm
+              cissApiUrlInicial={fusionAuth.cissApiUrl}
+              fazerSetup={fusionAuth.fazerSetup}
+              voltarParaLogin={fusionAuth.voltarParaLogin}
             />
           )}
 
@@ -92,7 +105,7 @@ export function CargasFusionPage() {
               <EnvioAutomaticoStatus />
 
               <div className="flex flex-wrap gap-2 border-b border-border pb-4">
-                {ABAS.map((aba) => (
+                {[...ABAS, ...(fusionAuth.user.admin ? [ABA_ADMIN] : [])].map((aba) => (
                   <Button
                     key={aba.chave}
                     type="button"
@@ -119,6 +132,9 @@ export function CargasFusionPage() {
                   <HistoricoPreCargaSection />
                 ))}
               {secao === "rastreio" && <RastreioSection />}
+              {secao === "administracao" && fusionAuth.user.admin && (
+                <AdministracaoSection eu={fusionAuth.user.username} />
+              )}
               {secao === "metricas" && <MetricasSection />}
               {secao === "diagnostico" && <DiagnosticoSection />}
               {secao === "ajudantes" && (

@@ -1,4 +1,19 @@
-"""Leitura e validação do ambiente. Falha no boot, não no primeiro login."""
+"""Monta a `Config` a partir de um mapeamento chave → texto.
+
+Desde a configuração em banco (`configuracoes.py`), a fonte é a tabela
+`configuracoes` do sqlite — o ambiente só fornece a infraestrutura
+(`CHAVES_INFRA`: onde está o banco, porta, Redis) e serve de semente
+única na primeira subida (`configuracoes.importar_ambiente`). As chaves
+continuam com os mesmos nomes das antigas variáveis de ambiente.
+
+Dois modos de validação:
+
+- **estrito** (padrão): combinação inválida levanta `ConfigError` — usado
+  ao salvar pela tela (vira 400) e pelos testes.
+- **tolerante** (boot a partir do banco): o grupo inválido fica desligado
+  (`None`/`False`) com um aviso no log. Derrubar o boot por um valor
+  salvo errado deixaria o pod em CrashLoop sem nenhuma tela pra corrigir.
+"""
 
 from __future__ import annotations
 
@@ -15,7 +30,13 @@ logger = logging.getLogger(__name__)
 
 
 class ConfigError(RuntimeError):
-    """Ambiente incompleto ou inválido."""
+    """Configuração incompleta ou inválida."""
+
+
+CHAVES_INFRA = ("DATABASE_PATH", "PORT", "REDIS_URL", "LOG_LEVEL")
+"""Ficam no ambiente (k8s Secret/`.env`), nunca no banco: `DATABASE_PATH`
+é onde o banco está (ovo e galinha); os outros são infraestrutura do pod,
+não decisão de quem opera a integração."""
 
 
 CISS_DB_OBRIGATORIAS = (
@@ -112,9 +133,13 @@ class FusionPortalConfig:
 @dataclass(frozen=True, slots=True)
 class Config:
     secret_key: str
-    """Assina os tokens de sessão deste serviço (`auth/tokens.py`)."""
+    """Assina os tokens de sessão deste serviço (`auth/tokens.py`). Gerada
+    e guardada no banco na primeira subida (`configuracoes.garantir_secret_key`)."""
 
-    ciss_api_url: str
+    ciss_api_url: str | None
+    """`None` só antes do setup inicial (`auth/setup.py`). O login lê o
+    valor atual do banco a cada tentativa (`auth/service.py`), então
+    concluir o setup não exige reinício."""
     ciss_ca_bundle: str | None
     ciss_db: CissDbConfig | None
     fusion: FusionConfig | None
@@ -309,39 +334,105 @@ def _sem_aspas_envolventes(env: Mapping[str, str]) -> dict[str, str]:
     return normalizado
 
 
-def load_config(env: Mapping[str, str] | None = None) -> Config:
+def _grupo(estrito: bool, nome: str, carregar):
+    """Modo tolerante: grupo inválido vira `None` com aviso (só a mensagem
+    de `ConfigError`, que cita nomes de chave, nunca valor)."""
+    try:
+        return carregar()
+    except (ConfigError, ValueError) as exc:
+        if estrito:
+            if isinstance(exc, ConfigError):
+                raise
+            raise ConfigError(f"{nome}: porta/timeout precisa ser número inteiro.") from None
+        logger.warning("Configuração inválida — %s desligado: %s", nome, type(exc).__name__)
+        return None
+
+
+def _inteiro(env: Mapping[str, str], nome: str, default: int, estrito: bool) -> int:
+    valor = (env.get(nome) or "").strip()
+    if not valor:
+        return default
+    try:
+        numero = int(valor)
+        if numero <= 0:
+            raise ValueError
+        return numero
+    except ValueError:
+        if estrito:
+            raise ConfigError(f"{nome} precisa ser um inteiro positivo.") from None
+        logger.warning("Configuração inválida — %s não é inteiro positivo, usando %s", nome, default)
+        return default
+
+
+def _corte(env: Mapping[str, str], estrito: bool) -> datetime:
+    padrao = datetime(2026, 10, 28, 8, 0, 0)
+    valor = (env.get("AUTO_ENVIO_PRE_CARGA_CORTE") or "").strip()
+    if not valor:
+        return padrao
+    try:
+        return datetime.fromisoformat(valor)
+    except ValueError:
+        if estrito:
+            raise ConfigError(
+                "AUTO_ENVIO_PRE_CARGA_CORTE precisa estar no formato AAAA-MM-DDTHH:MM:SS."
+            ) from None
+        logger.warning("Configuração inválida — AUTO_ENVIO_PRE_CARGA_CORTE ilegível, usando o padrão")
+        return padrao
+
+
+def _dependencia(estrito: bool, ligado: bool, ok: bool, mensagem: str, nome: str) -> bool:
+    """Flag ligada sem o que ela exige: estrito levanta, tolerante desliga."""
+    if ligado and not ok:
+        if estrito:
+            raise ConfigError(mensagem)
+        logger.warning("Configuração inválida — %s desligado: %s", nome, mensagem)
+        return False
+    return ligado
+
+
+def load_config(env: Mapping[str, str] | None = None, *, estrito: bool = True) -> Config:
+    """`env=None` lê o `.env`/ambiente do processo, só pra uso direto
+    (testes, script). `create_app` monta a partir do banco
+    (`configuracoes.carregar_config`)."""
     if env is None:
         load_dotenv(Path(__file__).resolve().parent / ".env")
         env = os.environ
     env = _sem_aspas_envolventes(env)
 
-    auto_envio_pre_carga_ativo = _bool(env, "AUTO_ENVIO_PRE_CARGA_ATIVO", False)
     redis_url = _optional(env, "REDIS_URL")
-    if auto_envio_pre_carga_ativo and not redis_url:
-        raise ConfigError(
-            "AUTO_ENVIO_PRE_CARGA_ATIVO=true exige REDIS_URL — é o lock que evita "
-            "o ciclo automático disparar em dobro nos workers do gunicorn."
-        )
-    rastreio_int_erp_ativo = _bool(env, "RASTREIO_INT_ERP_ATIVO", False)
-    rastreio_int_erp_automatico = _bool(env, "RASTREIO_INT_ERP_AUTOMATICO", False)
-    if rastreio_int_erp_automatico and not rastreio_int_erp_ativo:
-        raise ConfigError(
-            "RASTREIO_INT_ERP_AUTOMATICO=true exige RASTREIO_INT_ERP_ATIVO=true — "
-            "agendar um rastreio desligado não faz sentido, provável erro de digitação."
-        )
-    if rastreio_int_erp_ativo and not redis_url:
-        raise ConfigError(
-            "RASTREIO_INT_ERP_ATIVO=true exige REDIS_URL — getIntErp é destrutivo, "
-            "dois workers consumindo a fila ao mesmo tempo não pode acontecer."
-        )
+    auto_envio_pre_carga_ativo = _dependencia(
+        estrito,
+        _bool(env, "AUTO_ENVIO_PRE_CARGA_ATIVO", False),
+        bool(redis_url),
+        "AUTO_ENVIO_PRE_CARGA_ATIVO exige REDIS_URL (variável de ambiente) — é o lock que "
+        "evita o ciclo automático disparar em dobro nos workers do gunicorn.",
+        "AUTO_ENVIO_PRE_CARGA_ATIVO",
+    )
+    rastreio_int_erp_ativo = _dependencia(
+        estrito,
+        _bool(env, "RASTREIO_INT_ERP_ATIVO", False),
+        bool(redis_url),
+        "RASTREIO_INT_ERP_ATIVO exige REDIS_URL (variável de ambiente) — getIntErp é "
+        "destrutivo, dois workers consumindo a fila ao mesmo tempo não pode acontecer.",
+        "RASTREIO_INT_ERP_ATIVO",
+    )
+    rastreio_int_erp_automatico = _dependencia(
+        estrito,
+        _bool(env, "RASTREIO_INT_ERP_AUTOMATICO", False),
+        rastreio_int_erp_ativo,
+        "RASTREIO_INT_ERP_AUTOMATICO exige RASTREIO_INT_ERP_ATIVO — agendar um rastreio "
+        "desligado não faz sentido.",
+        "RASTREIO_INT_ERP_AUTOMATICO",
+    )
 
+    ciss_api_url = _optional(env, "CISS_API_URL")
     return Config(
         secret_key=_required(env, "SECRET_KEY"),
-        ciss_api_url=_required(env, "CISS_API_URL").rstrip("/"),
+        ciss_api_url=ciss_api_url.rstrip("/") if ciss_api_url else None,
         ciss_ca_bundle=_optional(env, "CISS_CA_BUNDLE"),
-        ciss_db=_load_ciss_db(env),
-        fusion=_load_fusion(env),
-        fusion_portal=_load_fusion_portal(env),
+        ciss_db=_grupo(estrito, "CISS DB2", lambda: _load_ciss_db(env)),
+        fusion=_grupo(estrito, "Fusion (SOAP)", lambda: _load_fusion(env)),
+        fusion_portal=_grupo(estrito, "Fusion (portal)", lambda: _load_fusion_portal(env)),
         database_path=(env.get("DATABASE_PATH") or "fusion_service.db"),
         port=int(env.get("PORT") or 5050),
         mostrar_cargas_ciss=_bool(env, "MOSTRAR_CARGAS_CISS", False),
@@ -350,16 +441,14 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         discord_webhook_atividade_url=_optional(env, "DISCORD_WEBHOOK_ATIVIDADE_URL"),
         redis_url=redis_url,
         auto_envio_pre_carga_ativo=auto_envio_pre_carga_ativo,
-        auto_envio_pre_carga_intervalo_segundos=int(
-            env.get("AUTO_ENVIO_PRE_CARGA_INTERVALO_SEGUNDOS") or 300
+        auto_envio_pre_carga_intervalo_segundos=_inteiro(
+            env, "AUTO_ENVIO_PRE_CARGA_INTERVALO_SEGUNDOS", 300, estrito
         ),
-        auto_envio_pre_carga_janela_horas=int(env.get("AUTO_ENVIO_PRE_CARGA_JANELA_HORAS") or 24),
-        auto_envio_pre_carga_corte=(
-            datetime.fromisoformat(env["AUTO_ENVIO_PRE_CARGA_CORTE"])
-            if env.get("AUTO_ENVIO_PRE_CARGA_CORTE")
-            else datetime(2026, 10, 28, 8, 0, 0)
-        ),
+        auto_envio_pre_carga_janela_horas=_inteiro(env, "AUTO_ENVIO_PRE_CARGA_JANELA_HORAS", 24, estrito),
+        auto_envio_pre_carga_corte=_corte(env, estrito),
         rastreio_int_erp_ativo=rastreio_int_erp_ativo,
         rastreio_int_erp_automatico=rastreio_int_erp_automatico,
-        rastreio_int_erp_intervalo_segundos=int(env.get("RASTREIO_INT_ERP_INTERVALO_SEGUNDOS") or 120),
+        rastreio_int_erp_intervalo_segundos=_inteiro(
+            env, "RASTREIO_INT_ERP_INTERVALO_SEGUNDOS", 120, estrito
+        ),
     )

@@ -77,7 +77,7 @@ Tailwind. Python 3.14.
 ```bash
 python -m venv .venv
 .venv/bin/pip install -r requirements.txt -r requirements-dev.txt
-cp .env.example .env   # preencher as credenciais, ver abaixo
+cp .env.example .env   # só infra (DATABASE_PATH etc.); o resto se configura na tela, ver abaixo
 .venv/bin/python -c "from app import create_app; create_app().run(port=5050)"
 ```
 
@@ -120,54 +120,83 @@ Testes do backend:
 .venv/bin/python -m pytest -q
 ```
 
-## Variáveis de ambiente
+## Configuração: no banco, não no `.env`
 
-Tudo documentado em `.env.example`. Os grupos que importam:
+Quase toda a configuração mora na tabela `configuracoes` do sqlite
+(`configuracoes.py`) e é editada na aba **Administração** (só admin). O
+ambiente (`.env`/k8s Secret) fica só com a infraestrutura do pod:
 
-- `SECRET_KEY` — assina as sessões deste serviço (validade ~12h).
-- `CISS_DB_*` (DRIVER/HOST/NAME/USER/PASSWORD/PORT/TIMEOUT) — leitura do
-  CISS DB2 via ODBC, somente `SELECT` (guarda em
-  `integrations/ciss.py::validate_readonly_query`). Todas obrigatórias, ou
-  nenhuma.
-- `CISS_API_URL` / `CISS_CA_BUNDLE` — autenticação CISS (o login desta
-  app).
-- `FUSION_API_URL/LOGIN/SENHA` — webservice SOAP do Fusion (`saveCarga`,
-  `saveEntregaServico`, `sendMotoristas`, `sendVeiculos`, `sendClientes`,
-  `consultarVeiculo`, `consultarTodosVeiculos`). Todas ou nenhuma. No
-  escopo atual, só `saveEntregaServico`/`sendMotoristas`/`sendClientes`
-  entram em jogo de verdade — o resto é o caminho legado (ver acima).
-- `FUSION_PORTAL_URL/LOGIN/SENHA` — portal web do Fusion (login humano via
-  `fusion-py`): busca e sugestão de motorista e veículo, checagem se um
-  cliente já está cadastrado. Todas ou nenhuma.
-- `MOSTRAR_CARGAS_CISS` (default `false`) / `SOMENTE_PEDIDOS_SOLTOS`
-  (default `true`) — flags do caminho legado, ver seção acima. Não
-  religar sem saber por quê.
-- `AUTO_ENVIO_PRE_CARGA_ATIVO` (default `false`), `REDIS_URL` (obrigatório
-  se a flag acima for `true`), `AUTO_ENVIO_PRE_CARGA_INTERVALO_SEGUNDOS`
-  (default `300`), `AUTO_ENVIO_PRE_CARGA_JANELA_HORAS` (default `24`),
-  `AUTO_ENVIO_PRE_CARGA_CORTE` (ISO `AAAA-MM-DDTHH:MM:SS`, default fixo
-  no código pra produção) — ciclo automático de envio de pedido solto,
-  ver seção acima e `CLAUDE.md`.
-- `RASTREIO_INT_ERP_ATIVO` (default `false`, exige `REDIS_URL`) — liga o
-  rastreio (`getIntErp` → `DBA.CARGAS_FUSION_TRACK`/`ENTREGAS_FUSION_TRACK`
-  → `setIntErp`, e `obtemEventosPorID` → `DBA.EVENTOS_FUSION_TRACK`/
-  `ITENS_DEVOLVIDOS_FUSION_TRACK` — única escrita no CISS DB2) **só pelo botão "Executar
-  ciclo agora"**. `RASTREIO_INT_ERP_AUTOMATICO` (default `false`) agenda o
-  ciclo a cada `RASTREIO_INT_ERP_INTERVALO_SEGUNDOS` (default `120`) —
-  separado de propósito: ligar o rastreio nunca começa a escrever sozinho. `getIntErp` e `obtemEventosPorID` são destrutivos: nunca ligar em dev apontando
-  pro Fusion de produção sem querer consumir a fila de verdade.
-- `DISCORD_WEBHOOK_URL` — canal de **erros** (só falha, embed vermelho).
-  `DISCORD_WEBHOOK_ATIVIDADE_URL` — canal de **atividade**: toda ação da
-  integração (escrita no Fusion e no CISS, `getIntErp` consumido,
-  `setIntErp`, resumo de ciclo, pausa/retomada). Ambos opcionais — sem
-  eles, só log. Ver `CLAUDE.md`, "Discord: dois canais".
-- `DATABASE_PATH`, `PORT`.
+- `DATABASE_PATH` — onde está o sqlite (ovo e galinha: não dá pra estar
+  no próprio banco).
+- `PORT`, `LOG_LEVEL`.
+- `REDIS_URL` — lock do ciclo automático e do rastreio contra os 2
+  workers do gunicorn. Sem ele, envio automático e rastreio não podem
+  ser ligados (a tela recusa).
 
-Qualquer grupo "todas ou nenhuma" ausente faz o recurso correspondente
-rodar desligado (ex.: sem `FUSION_API_URL/LOGIN/SENHA`, envio ao Fusion
-fica indisponível, mas o resto do serviço sobe normalmente).
+O resto, com o mesmo nome das antigas variáveis de ambiente (detalhes de
+cada uma na própria tela e em `configuracoes.CAMPOS`):
+
+- **CISS, autenticação**: `CISS_API_URL`/`CISS_CA_BUNDLE`. A única lida
+  ao vivo (o login lê a cada tentativa); todas as outras valem a partir
+  do próximo reinício.
+- **CISS DB2**: `CISS_DB_*`, leitura via ODBC, somente `SELECT` (guarda em
+  `integrations/ciss.py::validate_readonly_query`). Todas ou nenhuma.
+- **Fusion SOAP**: `FUSION_API_URL/LOGIN/SENHA/EMPRESA_ID`. **Portal**:
+  `FUSION_PORTAL_URL/LOGIN/SENHA`. Todas ou nenhuma, por grupo.
+- **Discord**: `DISCORD_WEBHOOK_URL` (erros) e
+  `DISCORD_WEBHOOK_ATIVIDADE_URL` (atividade). Ver `CLAUDE.md`,
+  "Discord: dois canais".
+- **Recursos (sensíveis)**: `MOSTRAR_CARGAS_CISS`, `SOMENTE_PEDIDOS_SOLTOS`,
+  `AUTO_ENVIO_PRE_CARGA_ATIVO`, `RASTREIO_INT_ERP_ATIVO`,
+  `RASTREIO_INT_ERP_AUTOMATICO` (e `AUTO_ENVIO_PRE_CARGA_CORTE`). Mudar
+  qualquer um pede confirmação explícita na tela, fica no histórico
+  (`configuracoes_historico`) e gera aviso no canal de erros do Discord.
+  `getIntErp` e `obtemEventosPorID` são destrutivos: nunca ligar o
+  rastreio em dev apontando pro Fusion de produção sem querer consumir a
+  fila de verdade.
+- **Ciclos**: intervalos/janela do envio automático e do rastreio.
+- `SECRET_KEY` — gerada sozinha na primeira subida e guardada no banco.
+
+**Aplicar**: salvar grava no banco; o processo só usa depois de
+reiniciar. O botão "Reiniciar agora" manda `SIGHUP` pro master do
+gunicorn (workers novos releem a configuração, os antigos terminam com
+calma, sem derrubar o pod). Fora do gunicorn, reinicie à mão.
+
+**Validação**: ao salvar, a combinação inteira é validada (grupo pela
+metade, flag sem o que ela exige, número inválido → 400, nada gravado).
+No boot, um valor salvo inválido desliga só aquele recurso com um aviso
+no log, em vez de derrubar o pod (sem pod não há tela pra corrigir).
+
+**Segredos ficam em texto puro no sqlite** (decisão do negócio,
+2026-11-27): a proteção é o acesso ao PVC. A API nunca devolve o valor de
+um segredo (só se está definido), e o histórico nunca grava o valor.
+
+**Migração de um deploy com `.env`**: na primeira subida com esta versão,
+tudo que estiver no ambiente é copiado pro banco **uma vez só**
+(`configuracoes.importar_ambiente`, marcador `_IMPORTADO_DO_AMBIENTE`),
+inclusive `SECRET_KEY` (sessões abertas continuam valendo). Depois disso
+o ambiente é ignorado pra essas chaves: pode limpar o Secret.
 
 ## Autenticação
+
+### Setup inicial: o primeiro admin
+
+Instalação nova (ou banco de antes dos admins) não tem admin nenhum, e
+só admin concede acesso. Enquanto não houver admin ativo:
+
+1. O boot gera um token de uso único e grava em `setup-token.txt`, ao
+   lado do banco (no PVC). **O token nunca vai pro log**, só o caminho:
+   `kubectl exec deploy/fusion-service-backend -- cat /app/data/setup-token.txt`.
+2. A tela abre direto no setup (ou mostra "Fazer o setup inicial" sob o
+   login, se a URL do CISS já está configurada): token, URL da API do
+   CISS e um login do CISS.
+3. Quem concluir vira admin (ou é promovido, se já estava na
+   allow-list); a URL vai pra configuração; o token é apagado.
+
+`GET /api/setup` (status) e `POST /api/setup` não pedem sessão; o token é
+a proteção. Ver `auth/setup.py`.
+
+### Login
 
 Único caminho: `POST /api/login` com `{username, password}` — a allow-list
 local (`usuarios_locais`) é consultada **antes** de qualquer chamada ao
@@ -183,12 +212,14 @@ guardado.
 pequeno:
 
 ```
-POST /api/usuarios   {username, ciss_code, name}   — concede ou reativa
-GET  /api/usuarios                                  — lista quem tem acesso
+POST  /api/usuarios             {username, ciss_code, name}   — concede ou reativa
+GET   /api/usuarios                                            — lista quem tem acesso
+PATCH /api/usuarios/<username>  {active?, admin?}             — ativa/desativa, dá/tira admin
 ```
 
-Ambas atrás de `login_required` — qualquer pessoa já com acesso pode
-conceder a outra.
+Todas só admin (`admin_required`, papel conferido ao vivo no banco a cada
+requisição, nunca confiado ao token). Nunca dá pra ficar sem nenhum
+admin ativo (409). Também na aba Administração → Usuários.
 
 ## Motorista, veículo e cliente — sem cadastro local
 

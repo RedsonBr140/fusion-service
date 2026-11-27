@@ -12,7 +12,10 @@ import type {
   AppConfig,
   CandidatoPessoaCiss,
   CargaResumo,
+  ConfiguracoesAdmin,
   EmpresaEstoque,
+  UsuarioAllowList,
+  UsuarioSessao,
   DetalheRastreio,
   EnvioAutomaticoEstado,
   ListagemRastreio,
@@ -99,7 +102,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 export function login(
   username: string,
   password: string
-): Promise<{ token: string; user: { ciss_code: string | null; name: string } }> {
+): Promise<{ token: string; user: UsuarioSessao }> {
   return request("/api/login", {
     method: "POST",
     body: JSON.stringify({ username, password }),
@@ -109,8 +112,67 @@ export function login(
 /** Confere se o token guardado ainda é válido (não expirou, não foi
  * desativado na allow-list) e devolve quem está logado — usado só no
  * carregamento da página, pra restaurar a sessão sem pedir login de novo. */
-export function getMe(): Promise<{ user: { ciss_code: string | null; name: string } }> {
+export function getMe(): Promise<{ user: UsuarioSessao }> {
   return request("/api/me");
+}
+
+// --- Setup inicial (sem sessão) -------------------------------------------
+
+export function getSetupStatus(): Promise<{ necessario: boolean; ciss_api_url: string | null }> {
+  return request("/api/setup");
+}
+
+export function concluirSetup(dados: {
+  token: string;
+  ciss_api_url: string;
+  ciss_ca_bundle?: string;
+  username: string;
+  password: string;
+  name?: string;
+}): Promise<{ token: string; user: UsuarioSessao }> {
+  return request("/api/setup", { method: "POST", body: JSON.stringify(dados) });
+}
+
+// --- Administração (só admin) ---------------------------------------------
+
+export function getConfiguracoes(): Promise<ConfiguracoesAdmin> {
+  return request("/api/admin/configuracoes");
+}
+
+export function salvarConfiguracoes(
+  valores: Record<string, string | boolean | null>,
+  confirmarPerigosos = false
+): Promise<ConfiguracoesAdmin & { alteradas: string[] }> {
+  return request("/api/admin/configuracoes", {
+    method: "PUT",
+    body: JSON.stringify({ valores, confirmar_perigosos: confirmarPerigosos || undefined }),
+  });
+}
+
+export function reiniciarWorkers(): Promise<{ status: string }> {
+  return request("/api/admin/reiniciar", { method: "POST" });
+}
+
+export function getUsuarios(): Promise<{ usuarios: UsuarioAllowList[] }> {
+  return request("/api/usuarios");
+}
+
+export function concederUsuario(dados: {
+  username: string;
+  ciss_code: string;
+  name: string;
+}): Promise<{ usuario: UsuarioAllowList }> {
+  return request("/api/usuarios", { method: "POST", body: JSON.stringify(dados) });
+}
+
+export function alterarUsuario(
+  username: string,
+  mudanca: { active?: boolean; admin?: boolean }
+): Promise<{ usuario: UsuarioAllowList }> {
+  return request(`/api/usuarios/${encodeURIComponent(username)}`, {
+    method: "PATCH",
+    body: JSON.stringify(mudanca),
+  });
 }
 
 export function getAppConfig(): Promise<AppConfig> {

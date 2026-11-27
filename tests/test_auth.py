@@ -9,12 +9,12 @@ from database import connect
 from integrations.ciss_auth import CissUnavailable, InvalidCredentials
 
 
-def criar_usuario_local(config, ciss_code="123", name="Fulano", active=1):
+def criar_usuario_local(config, ciss_code="123", name="Fulano", active=1, admin=0):
     conn = connect(config.database_path)
     with conn:
         conn.execute(
-            "INSERT INTO usuarios_locais (username, ciss_code, name, active) VALUES (?, ?, ?, ?)",
-            (ciss_code, ciss_code, name, active),
+            "INSERT INTO usuarios_locais (username, ciss_code, name, active, admin) VALUES (?, ?, ?, ?, ?)",
+            (ciss_code, ciss_code, name, active, admin),
         )
     conn.close()
 
@@ -100,9 +100,10 @@ def test_login_bem_sucedido_devolve_token_e_usuario(app, config):
 
         resultado = service.login("42", "senha", authenticate=_autenticar_ok)
 
-    assert resultado["user"] == {"ciss_code": "42", "name": "Fulano"}
+    assert resultado["user"] == {"username": "42", "ciss_code": "42", "name": "Fulano", "admin": False}
     claims = tokens.verificar(resultado["token"], config.secret_key)
     assert claims["ciss_code"] == "42"
+    assert claims["username"] == "42"
 
 
 def test_login_route_sem_credenciais_devolve_401(client):
@@ -119,17 +120,37 @@ def test_me_sem_token_devolve_401(client):
 
 
 def test_me_com_token_valido_devolve_usuario(client, config):
+    criar_usuario_local(config, ciss_code="42", name="Fulano")
     token = tokens.criar_token_sessao(ciss_code="42", name="Fulano", secret=config.secret_key)
     resp = client.get("/api/me", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 200
-    assert resp.get_json()["user"] == {"ciss_code": "42", "name": "Fulano"}
+    assert resp.get_json()["user"] == {"username": "42", "ciss_code": "42", "name": "Fulano", "admin": False}
+
+
+def test_me_de_usuario_desativado_depois_do_login_devolve_401(client, config):
+    criar_usuario_local(config, ciss_code="43", active=0)
+    token = tokens.criar_token_sessao(username="43", ciss_code="43", name="X", secret=config.secret_key)
+    resp = client.get("/api/me", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 401
 
 
 # --- Allow-list (conceder/listar usuarios_locais) -----------------------
 
 
-def _auth_header(config, *, ciss_code="42", name="Quem Concede"):
-    token = tokens.criar_token_sessao(ciss_code=ciss_code, name=name, secret=config.secret_key)
+def _auth_header(config, *, ciss_code="42", name="Quem Concede", admin=True):
+    """Cria quem concede na allow-list (admin por padrão — só admin
+    gerencia usuários) e devolve o header com o token dele."""
+    conn = connect(config.database_path)
+    with conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO usuarios_locais (username, ciss_code, name, active, admin) "
+            "VALUES (?, ?, ?, 1, ?)",
+            (f"u{ciss_code}", ciss_code, name, int(admin)),
+        )
+    conn.close()
+    token = tokens.criar_token_sessao(
+        username=f"u{ciss_code}", ciss_code=ciss_code, name=name, secret=config.secret_key
+    )
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -155,13 +176,14 @@ def test_conceder_usuario_novo_entra_na_allowlist_e_pode_logar(app, client, conf
         "ciss_code": "7",
         "name": "Pessoa Nova",
         "active": True,
+        "admin": False,
     }
 
     with app.app_context():
         from auth import service
 
         resultado = service.login("7", "qualquer", authenticate=_autenticar_ok)
-    assert resultado["user"] == {"ciss_code": "7", "name": "Pessoa Nova"}
+    assert resultado["user"]["name"] == "Pessoa Nova"
 
 
 def test_conceder_usuario_existente_reativa_e_atualiza_dados(client, config):

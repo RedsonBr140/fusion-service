@@ -14,6 +14,7 @@ from flask import current_app, g, jsonify, request
 from auth import tokens
 
 NOT_AUTHENTICATED = "Não autenticado."
+NOT_ADMIN = "Só administradores."
 
 
 def login_required(view):
@@ -30,7 +31,30 @@ def login_required(view):
         except tokens.TokenInvalido:
             return jsonify({"error": NOT_AUTHENTICATED}), 401
 
-        g.user = {"ciss_code": claims.get("ciss_code"), "name": claims.get("name")}
+        g.user = {
+            "username": claims.get("username"),
+            "ciss_code": claims.get("ciss_code"),
+            "name": claims.get("name"),
+        }
+        g.claims = claims
+        return view(*args, **kwargs)
+
+    return wrapper
+
+
+def admin_required(view):
+    """Papel conferido ao vivo no banco, nunca confiado ao token: tirar
+    admin de alguém vale na próxima requisição, não em 12h."""
+
+    @login_required
+    @wraps(view)
+    def wrapper(*args, **kwargs):
+        from auth.service import usuario_da_sessao
+
+        row = usuario_da_sessao(g.claims)
+        if row is None or row["active"] != 1 or row["admin"] != 1:
+            return jsonify({"error": NOT_ADMIN}), 403
+        g.user["username"] = row["username"]
         return view(*args, **kwargs)
 
     return wrapper

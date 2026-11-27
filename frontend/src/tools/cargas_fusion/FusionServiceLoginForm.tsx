@@ -10,9 +10,12 @@ const ERRO_ID = "fusion-service-login-erro";
 export function FusionServiceLoginForm({
   loginDireto,
   mensagemInicial,
+  onSetup,
 }: {
   loginDireto: (username: string, password: string) => Promise<void>;
   mensagemInicial: string | null;
+  /** Presente só enquanto não há admin (setup inicial aberto). */
+  onSetup?: () => void;
 }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -79,6 +82,15 @@ export function FusionServiceLoginForm({
           {enviando ? "Entrando…" : "Entrar"}
         </Button>
       </form>
+
+      {onSetup && (
+        <p className="mt-6 text-center text-sm text-muted-foreground">
+          Instalação sem administrador.{" "}
+          <button type="button" className="underline underline-offset-4" onClick={onSetup}>
+            Fazer o setup inicial
+          </button>
+        </p>
+      )}
     </div>
   );
 }

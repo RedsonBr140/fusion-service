@@ -70,8 +70,14 @@ def verificar(token: str, secret: str) -> dict:
     return claims
 
 
-def criar_token_sessao(*, ciss_code: str | None, name: str, secret: str) -> str:
+def criar_token_sessao(
+    *, ciss_code: str | None, name: str, secret: str, username: str | None = None
+) -> str:
+    """`username` identifica a pessoa na allow-list (o papel de admin é
+    conferido ao vivo no banco, nunca confiado ao token). Token antigo, sem
+    `username`, cai no `ciss_code` (`auth/service.py::usuario_da_sessao`)."""
     claims = {
+        "username": username,
         "ciss_code": ciss_code,
         "name": name,
         "exp": time.time() + SESSAO_VALIDADE_SEGUNDOS,

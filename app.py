@@ -17,12 +17,17 @@ import redis
 from apscheduler.schedulers.background import BackgroundScheduler
 from flask import Flask, jsonify, send_from_directory
 
+from dotenv import load_dotenv
+
+import configuracoes
 import database
+from auth import setup
+from auth.admin_routes import bp as admin_bp
 from auth.decorators import login_required
 from auth.routes import bp as auth_bp
 from cargas_fusion import auto_envio, rastreio
 from cargas_fusion.routes import bp as cargas_fusion_bp
-from config import Config, load_config
+from config import Config
 from integrations.ciss import CissClient
 from integrations import discord
 from integrations.auditoria import ClienteAuditado
@@ -123,10 +128,40 @@ def _agendar_rastreio_int_erp(
     scheduler.start()
 
 
+def _carregar_do_banco() -> tuple[Config, dict[str, str]]:
+    """Ambiente só pra infra (`config.CHAVES_INFRA`) + semente única; o
+    resto vem da tabela `configuracoes` (ver `configuracoes.py`)."""
+    load_dotenv(Path(__file__).resolve().parent / ".env")
+    infra = configuracoes.infra_do_ambiente(os.environ)
+    database.init_database(infra.get("DATABASE_PATH") or "fusion_service.db")
+    conn = database.connect(infra.get("DATABASE_PATH") or "fusion_service.db")
+    try:
+        configuracoes.importar_ambiente(conn, os.environ)
+        return configuracoes.carregar_config(conn, infra), infra
+    finally:
+        conn.close()
+
+
 def create_app(config=None) -> Flask:
     _configurar_logging()
     app = Flask(__name__)
-    config = config or load_config()
+    if config is None:
+        config, infra = _carregar_do_banco()
+    else:
+        # Testes: `Config` pronta, sem banco como fonte.
+        database.init_database(config.database_path)
+        infra = {"DATABASE_PATH": config.database_path}
+        if config.redis_url:
+            infra["REDIS_URL"] = config.redis_url
+    conn = database.connect(config.database_path)
+    try:
+        # O que este processo leu no boot — a tela compara com o banco
+        # pra mostrar "pendente de reinício".
+        app.config["CONFIG_NO_BOOT"] = configuracoes.ler_todos(conn)
+        setup.preparar(conn, config.database_path)
+    finally:
+        conn.close()
+    app.config["CONFIG_INFRA"] = infra
     app.config["APP_CONFIG"] = config
     app.config["SECRET_KEY"] = config.secret_key
 
@@ -160,6 +195,7 @@ def create_app(config=None) -> Flask:
     database.init_app(app)
 
     app.register_blueprint(auth_bp)
+    app.register_blueprint(admin_bp)
     app.register_blueprint(cargas_fusion_bp)
 
     if config.auto_envio_pre_carga_ativo:

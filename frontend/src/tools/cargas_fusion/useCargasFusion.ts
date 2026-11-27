@@ -15,10 +15,13 @@ import type { SelecaoEnvioCargaFusion } from "@/types";
 
 /** Flags de `.env` (`GET /api/config`) — hoje só `mostrar_cargas_ciss`,
  * que decide se a aba de carga real (CISS) aparece no frontend. */
-export function useAppConfig() {
+export function useAppConfig(habilitado = true) {
   return useQuery({
     queryKey: ["app-config"],
     queryFn: getAppConfig,
+    // /api/config exige sessão — sem isto, a tela de login/setup disparava
+    // um 401 inútil (e o cache ficava com erro até o reload).
+    enabled: habilitado,
   });
 }
 

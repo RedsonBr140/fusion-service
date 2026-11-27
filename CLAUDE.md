@@ -821,6 +821,55 @@ produção).
   traceback do `requests.raise_for_status()` em log real (2026-11-26);
   `_postar` só loga tipo da exceção / status HTTP.
 
+## Configuração em banco e setup inicial
+
+Decisão do negócio (2026-11-27): a configuração saiu do `.env` pra tabela
+`configuracoes` do sqlite (`configuracoes.py`), editada na aba
+Administração. Só `config.CHAVES_INFRA` (`DATABASE_PATH`, `PORT`,
+`REDIS_URL`, `LOG_LEVEL`) continua no ambiente. Regras:
+
+- **Mesmos nomes de chave das antigas variáveis.** `config.load_config`
+  monta a `Config` igual, a partir de `{**banco, **infra}`. Campo novo
+  entra em `configuracoes.CAMPOS` (rótulo, grupo, tipo, `perigoso`), não
+  em `.env.example`.
+- **Lida uma vez no boot** (escolha do negócio: reinício, não reload ao
+  vivo). Exceção única: `CISS_API_URL`/`CISS_CA_BUNDLE`, lidas a cada
+  login (`auth/service.py::_default_authenticate`), senão concluir o
+  setup inicial exigiria reinício. Não espalhar leitura ao vivo pra
+  outras chaves: clients e schedulers são montados no `create_app`.
+- **Boot tolerante, salvar estrito.** No boot (`load_config(...,
+  estrito=False)`), valor inválido desliga só aquele grupo/flag com aviso.
+  Derrubar o boot deixaria o pod em CrashLoop sem tela pra corrigir. Ao
+  salvar (`configuracoes.salvar`), o conjunto inteiro passa pelo modo
+  estrito antes de gravar qualquer coisa.
+- **Flags "perigosas"** (`MOSTRAR_CARGAS_CISS`, `SOMENTE_PEDIDOS_SOLTOS`,
+  `AUTO_ENVIO_PRE_CARGA_ATIVO`, `RASTREIO_INT_ERP_*`,
+  `AUTO_ENVIO_PRE_CARGA_CORTE`) são editáveis pela tela (decisão do
+  negócio), mas exigem `confirmar_perigosos` (409 sem isso), vão pro
+  histórico e geram `discord.aviso`. Isso substitui a barreira antiga de
+  "só com deploy". Quem liga a escrita no CISS agora é um admin na tela.
+- **Segredo em texto puro no sqlite** (decisão do negócio). Mesmo assim:
+  a API nunca devolve o valor de um campo `segredo`, o histórico grava
+  `NULL` no lugar do valor, e o log de alteração cita só nomes de chave.
+- **Semente do ambiente uma vez só** (`importar_ambiente`, marcador
+  `_IMPORTADO_DO_AMBIENTE`): apagar um valor na tela não ressuscita o do
+  Secret no próximo boot. `SECRET_KEY` também é importada (sessões
+  sobrevivem) ou gerada.
+
+**Setup inicial** (`auth/setup.py`): sem admin ativo, ninguém conseguia
+entrar numa instalação nova (login exige allow-list, e só admin
+concede). Enquanto não houver admin, o boot grava um token de uso único
+em `setup-token.txt` ao lado do banco. **Nunca no log**, por causa da
+regra de nenhum log registrar token: o log só diz o caminho. `/setup`
+pede token + URL do CISS + login do CISS. Login continua só CISS, sem
+senha local. Banco de antes dos admins também cai aqui: tem usuários mas
+nenhum admin, e quem concluir é promovido.
+
+**Admin** (`usuarios_locais.admin`, `auth/decorators.py::admin_required`):
+papel conferido ao vivo no banco, nunca confiado ao token. Gerenciar a
+allow-list virou só admin (antes, qualquer logado concedia). `alterar`
+nunca deixa a instalação sem admin ativo: o setup só reabre num reinício.
+
 ## Métodos do WSDL não implementados
 
 `atualizaCarga`/`cancelaCarga` (atualizar `dt_saida`/motorista/veículo ou

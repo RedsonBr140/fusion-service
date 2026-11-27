@@ -9,7 +9,43 @@ export interface EmpresaEstoque {
   nome: string;
 }
 
-/** Flags lidas de `.env` (`config.py`), expostas via `GET /api/config`. */
+export interface UsuarioSessao {
+  username: string;
+  ciss_code: string | null;
+  name: string;
+  /** Conferido ao vivo pelo backend em toda rota de admin — isto aqui só
+   * decide se a aba "Administração" aparece. */
+  admin: boolean;
+}
+
+export interface UsuarioAllowList extends UsuarioSessao {
+  active: boolean;
+}
+
+export interface CampoConfiguracao {
+  chave: string;
+  rotulo: string;
+  tipo: "texto" | "segredo" | "bool" | "inteiro" | "datahora";
+  descricao: string;
+  /** Mudar exige confirmação explícita e avisa no Discord. */
+  perigoso: boolean;
+  padrao: string | null;
+  definido: boolean;
+  /** Sempre `null` para `segredo` — o backend nunca devolve o valor. */
+  valor: string | null;
+  atualizado_por: string | null;
+  pendente_reinicio: boolean;
+}
+
+export interface ConfiguracoesAdmin {
+  grupos: { chave: string; rotulo: string; campos: CampoConfiguracao[] }[];
+  pendente_reinicio: boolean;
+  redis_configurado: boolean;
+  reinicio_disponivel: boolean;
+}
+
+/** Flags da configuração (`configuracoes.py`, lidas no boot), expostas via
+ * `GET /api/config`. */
 export interface AppConfig {
   /** `false` por padrão — formação de carga passa a acontecer dentro do
    * próprio Fusion; esconde a aba de carga real (CISS) no frontend

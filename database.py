@@ -45,7 +45,13 @@ def _migrar(conn: sqlite3.Connection) -> None:
 
     `modo`: coluna nova pro envio "solto" de pré-carga de pedido único
     (só `saveEntregaServico`, sem `saveCarga`) — banco existente nunca
-    tinha essa coluna, mesmo caso do `veiculo_codigo_erp` acima."""
+    tinha essa coluna, mesmo caso do `veiculo_codigo_erp` acima.
+
+    `usuarios_locais.admin`: papel de admin (setup inicial, configuração em
+    banco). Banco existente começa sem admin nenhum — o setup inicial
+    (`auth/setup.py`) fica disponível até alguém reivindicar."""
+    if _tabela_existe(conn, "usuarios_locais") and "admin" not in _colunas(conn, "usuarios_locais"):
+        conn.execute("ALTER TABLE usuarios_locais ADD COLUMN admin INTEGER NOT NULL DEFAULT 0")
     if _tabela_existe(conn, "cargas_fusion_precarga_fila"):
         colunas = _colunas(conn, "cargas_fusion_precarga_fila")
         if "veiculo_codigo_erp" not in colunas:

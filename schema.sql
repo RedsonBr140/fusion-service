@@ -10,7 +10,38 @@ CREATE TABLE IF NOT EXISTS usuarios_locais (
     ciss_code   TEXT UNIQUE,
     name        TEXT NOT NULL,
     active      INTEGER NOT NULL DEFAULT 1,
+    -- Admin gerencia a allow-list e a configuração (tela "Administração").
+    -- O primeiro admin sai do setup inicial (auth/setup.py).
+    admin       INTEGER NOT NULL DEFAULT 0,
     created_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Configuração da integração (configuracoes.py), no lugar do .env. Chaves
+-- com o nome das antigas variáveis de ambiente; `_...` são internas.
+-- Segredo em texto puro (decisão do negócio, 2026-11-27).
+CREATE TABLE IF NOT EXISTS configuracoes (
+    chave           TEXT PRIMARY KEY,
+    valor           TEXT NOT NULL,
+    atualizado_em   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    atualizado_por  TEXT
+);
+
+-- Quem mudou o quê. Segredo nunca tem o valor gravado aqui (NULL).
+CREATE TABLE IF NOT EXISTS configuracoes_historico (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    chave           TEXT NOT NULL,
+    valor_anterior  TEXT,
+    valor_novo      TEXT,
+    alterado_por    TEXT NOT NULL,
+    alterado_em     TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Token de uso único do setup inicial (auth/setup.py). Existe só enquanto
+-- não há nenhum admin ativo; uma linha só.
+CREATE TABLE IF NOT EXISTS setup_inicial (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    token       TEXT NOT NULL,
+    criado_em   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Motorista e veículo não têm tabela própria: lidos ao vivo do portal web
