@@ -188,7 +188,7 @@ COLUNAS_EVENTOS_FUSION_TRACK: tuple[tuple[str, str], ...] = (
     ("DATAHORAREGISTRO", "TIMESTAMP"),
     ("IDMOTIVODEVOLUCAO", "INTEGER"),
     ("DESCRDEVOLUCAO", "VARCHAR(45)"),
-    ("STATUS", "VARCHAR(10)"),  # sem fonte decidida ainda — sempre NULL
+    ("STATUS", "INTEGER"),  # t15_tipo, ver rastreio_eventos.TIPOS_EVENTO
     ("LINKFOTO", "VARCHAR(500)"),
 )
 

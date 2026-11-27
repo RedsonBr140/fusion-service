@@ -119,6 +119,46 @@ def _ordens_historicas(conn: sqlite3.Connection, t10_id: int) -> dict[str, int]:
     return ordens
 
 
+# `t15_tipo` → significado (tabela do negócio, 2026-11-27). Vai como
+# `STATUS`; tipo fora daqui (visto em produção: 991 "Alteracao Status
+# Manual", "M" "Mensagem Motorista") vai nulo. `DESCRICAO` continua o
+# texto do próprio Fusion (`t15_descricao`), que às vezes é mais
+# específico que o tipo (tipo 21 já veio como "Cliente Devolveu").
+TIPOS_EVENTO: dict[int, str] = {
+    1: "Início do Romaneio",
+    2: "Chegou no Cliente",
+    3: "Início Jornada do Motorista",
+    4: "Fim Jornada do Motorista",
+    5: "Entrega Adiada",
+    6: "Entrega Iniciada",
+    7: "Entrega Realizada",
+    8: "Entrada Adiada II",
+    9: "Entrega Devolvida",
+    10: "Entrega Devolvida Parcialmente",
+    11: "Registrar Local Atual",
+    12: "Alerta de Roubo",
+    13: "NF-e E-mail",
+    14: "Envio Foto",
+    16: "Fim Direção",
+    17: "Nova Coleta",
+    20: "Desvio Customizado",
+    21: "Envio Canhoto",
+    24: "Início Carregamento",
+    25: "Chegada no Pátio",
+    26: "Alerta Pânico",
+    901: "Ajuste KM Inicial Romaneio",
+    909: "Ajuste KM Final Romaneio",
+    990: "Saída Próximo Cliente",
+    998: "Romaneio Finalizado Manualmente",
+    999: "Final Romaneio",
+}
+
+
+def status_evento(evento: dict) -> int | None:
+    tipo = _r()._inteiro(evento.get("t15_tipo"))
+    return tipo if tipo in TIPOS_EVENTO else None
+
+
 def _motivo(evento: dict) -> int | None:
     motivo = _r()._inteiro(evento.get("t15_motivo_devol_reent_id"))
     return motivo or None  # "0" = sem motivo
@@ -145,7 +185,7 @@ def mapear_evento(evento: dict, payload_romaneio: dict, ordens_historicas: dict[
         "DATAHORAREGISTRO": r._data(evento.get("t15_data_registro")),
         "IDMOTIVODEVOLUCAO": _motivo(evento),
         "DESCRDEVOLUCAO": r._texto(evento.get("descricao_motivo_devol_reent"), 45),
-        "STATUS": None,  # coluna nova, fonte ainda não decidida pelo negócio
+        "STATUS": status_evento(evento),
         "LINKFOTO": r._texto(evento.get("t15_link_foto"), 500),
     }
 

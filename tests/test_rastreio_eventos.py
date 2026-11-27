@@ -119,9 +119,14 @@ def test_grava_evento_do_escopo_com_sequencia_da_entrega(conn):
     assert linha["DATAHORA"] == datetime(2026, 11, 26, 10, 53, 56)
     assert linha["OBSMOTORISTA"] is None and linha["IDMOTIVODEVOLUCAO"] is None  # "0" = sem motivo
     assert linha["DATAHORAREGISTRO"] == datetime(2026, 11, 26, 10, 54, 23)
-    assert linha["STATUS"] is None and linha["LINKFOTO"] is None  # link vazio → nulo
+    assert linha["STATUS"] == 7 and linha["LINKFOTO"] is None  # link vazio → nulo
     assert itens == []
     assert _status(conn) == {100: "GRAVADO"}
+
+
+@pytest.mark.parametrize("tipo, esperado", [("21", 21), ("999", 999), ("991", None), ("M", None), ("", None)])
+def test_status_e_o_tipo_so_quando_esta_na_tabela(tipo, esperado):
+    assert rastreio_eventos.status_evento({"t15_tipo": tipo}) == esperado
 
 
 def test_link_da_foto_vai_pra_linkfoto(conn):

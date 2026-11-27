@@ -746,8 +746,9 @@ linha em `CARGAS_FUSION_TRACK` antes). Uma linha por NF por romaneio
 - Mapeamento: `IDEVENTOFUSION = t15_id`, `IDCARGAFUSION = t15_romaneio_id`,
   descrição/km/lat/long/`dataHora`/`obsMotorista` diretos,
   `DATAHORAREGISTRO = t15_data_registro`, `LINKFOTO = t15_link_foto`
-  (vazio → nulo), `STATUS` sempre nulo (coluna nova, 2026-11-26, sem
-  fonte decidida — o evento não tem status próprio),
+  (vazio → nulo), `STATUS = t15_tipo` (inteiro) só quando o tipo está em
+  `TIPOS_EVENTO` (tabela do negócio, 2026-11-27) — fora dela (991, `M`)
+  vai nulo; `DESCRICAO` segue o texto do Fusion, não o da tabela,
   `IDMOTIVODEVOLUCAO`/`DESCRDEVOLUCAO` = `t15_motivo_devol_reent_id`
   (`"0"` = sem motivo → nulo) / `descricao_motivo_devol_reent`.
   **`IDENTREGAFUSION` = sequência da entrega** (mesma regra de
