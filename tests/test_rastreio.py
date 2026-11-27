@@ -377,6 +377,9 @@ class CissLeituraFalsa:
     def get_carga_fusion_track(self, id_carga_fusion):
         return self.linha
 
+    def ler_track(self, tabela, colunas, coluna_filtro, valores):
+        return []
+
 
 def test_detalhe_mostra_payload_mapeada_e_linha_do_ciss(client, app, config):
     usuario_com_a_tool(client, config)

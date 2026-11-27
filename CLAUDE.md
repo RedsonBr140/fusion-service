@@ -770,6 +770,38 @@ linha em `CARGAS_FUSION_TRACK` antes). Uma linha por NF por romaneio
   ciclo; ordem de `t15_id`; `ERRO` retenta todo ciclo, alerta só na
   primeira falha.
 
+### Não regravar o que já está igual no DB2
+
+Antes de cada etapa gravar, o ciclo lê de volta o que já está no DB2 e só
+faz `MERGE` da linha que mudou. O caso que motivou: a reatualização de
+entregas regravava até 100 linhas idênticas a cada ciclo (2 min), cada uma
+gerando um embed no canal de atividade do Discord.
+
+- **Uma leitura por tabela por ciclo, nunca por linha**:
+  `CissClient.ler_track(tabela, colunas, coluna_filtro, valores)`,
+  `IN (...)` em lotes de 200, tabela numa allow-list própria das quatro
+  `*_FUSION_TRACK`. A leitura vai pelo client **de leitura**: o
+  `CissEscritaClient` continua aceitando só MERGE/INSERT/UPDATE (a
+  allow-list de escrita é a única defesa, não afrouxar pra caber um SELECT).
+- **Comparação por tipo de coluna** (`ciss_escrita.linha_identica`, a partir
+  de `COLUNAS_*`): inteiro, `DECIMAL` na escala da coluna, `TIMESTAMP` sem
+  fuso (o `CissClient` devolve ISO com `-03:00`), texto sem espaço à
+  direita e vazio = nulo. Validado contra staging (2026-11-27): os 177
+  romaneios gravados batem 100% com o que o código remontaria do payload,
+  acento incluído (`SÃO JOSE` volta igual).
+- **Na dúvida, grava**: linha ausente, coluna faltando, CLOB com 4000+
+  caracteres (é lido truncado), ou a leitura falhou (`ler_existentes` →
+  `None`) — tudo cai no comportamento de antes. A otimização nunca impede
+  uma gravação.
+- **Resultado `SEM_MUDANCA`** só no resumo do ciclo; o estado local não
+  muda de significado (pendência `INTERNALIZADO` e confirmada via
+  `setIntErp` igual, entrega `GRAVADA`, evento `GRAVADO`). Na entrega,
+  `gravada_em` passa a ser a última escrita de verdade e `atualizado_em` a
+  última conferência. O resumo no Discord não posta ciclo que só conferiu.
+- Dentro do mesmo ciclo, o que acabou de ser gravado entra no mapa de
+  existentes: duas pendências iguais do mesmo romaneio (MONTAGEM e depois
+  ROTEIRIZADO) gravam uma vez só.
+
 DB2: marcador `?` sem tipo não é aceito em `MERGE ... USING (VALUES ...)`
 (SQL0418N) — todo parâmetro vai com `CAST` explícito
 (`COLUNAS_CARGAS_FUSION_TRACK`). O `MERGE` foi validado contra produção

@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING
 
 from integrations.ciss import CissDbError, CissDbUnavailable, _limpar, _load_driver
@@ -227,6 +229,72 @@ SQL_MERGE_ITENS_DEVOLVIDOS_FUSION_TRACK = _sql_merge(
     COLUNAS_ITENS_DEVOLVIDOS_FUSION_TRACK,
     ("IDEVENTOFUSION", "IDENTREGAFUSION", "IDSUBPRODUTO"),
 )
+
+
+# Chave de cada tabela, na ordem das colunas — usada pra casar a linha
+# nova com a que já está no DB2 (`linha_identica`).
+CHAVE_CARGAS = ("IDCARGAFUSION",)
+CHAVE_ENTREGAS = _CHAVE_ENTREGAS
+CHAVE_EVENTOS = ("IDEVENTOFUSION",)
+CHAVE_ITENS_DEVOLVIDOS = ("IDEVENTOFUSION", "IDENTREGAFUSION", "IDSUBPRODUTO")
+
+# CLOB é lido de volta truncado (`CAST(SUBSTR(..., 1, N) AS VARCHAR(N))`,
+# ver `integrations/ciss.py`): texto nosso com N caracteres ou mais nunca é
+# dado como igual — na dúvida, grava.
+TAMANHO_LEITURA_CLOB = 4000
+
+
+def chave_de(linha: Mapping[str, object], chave: tuple[str, ...]) -> tuple:
+    return tuple(_comparavel(linha.get(nome), "INTEGER") for nome in chave)
+
+
+def _comparavel(valor: object, tipo: str) -> object:
+    """Os dois lados no mesmo formato: o que `mapear_*` produz (int,
+    Decimal, datetime ingênuo, str) e o que volta do DB2 pelo `CissClient`
+    (Decimal, str ISO com `-03:00` no lugar de datetime, str)."""
+    if valor is None:
+        return None
+    if tipo.startswith("INTEGER"):
+        try:
+            return int(valor)
+        except (TypeError, ValueError):
+            return valor
+    if tipo.startswith("DECIMAL"):
+        escala = int(tipo.rstrip(")").split(",")[1])
+        try:
+            return Decimal(str(valor)).quantize(Decimal(1).scaleb(-escala))
+        except (InvalidOperation, ValueError):
+            return valor
+    if tipo.startswith("TIMESTAMP"):
+        if isinstance(valor, str):
+            try:
+                valor = datetime.fromisoformat(valor)
+            except ValueError:
+                return valor
+        if isinstance(valor, datetime):
+            return valor.replace(tzinfo=None, microsecond=0)
+        return valor
+    texto = str(valor).rstrip()
+    return texto or None
+
+
+def linha_identica(
+    nova: Mapping[str, object], existente: Mapping[str, object] | None, colunas: tuple[tuple[str, str], ...]
+) -> bool:
+    """`True` só quando gravar `nova` não mudaria nada no DB2. Qualquer
+    dúvida (linha ausente, coluna faltando, CLOB longo) é `False`: o custo
+    de errar pra esse lado é só um MERGE a mais, como antes."""
+    if existente is None:
+        return False
+    for nome, tipo in colunas:
+        if nome not in existente:
+            return False
+        novo = nova.get(nome)
+        if tipo.startswith("CLOB") and isinstance(novo, str) and len(novo) >= TAMANHO_LEITURA_CLOB:
+            return False
+        if _comparavel(novo, tipo) != _comparavel(existente[nome], tipo):
+            return False
+    return True
 
 
 def _params(linha: dict[str, object], colunas: tuple[tuple[str, str], ...]) -> list[object]:

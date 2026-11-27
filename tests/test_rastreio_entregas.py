@@ -61,10 +61,22 @@ NF = {"IDEMPRESA": 2, "IDPLANILHA": 22156452, "NUMNOTA": 167888}
 
 
 class CissFalso:
-    def __init__(self, nfs=None, erro=None):
+    """`db2`: lista de linhas que "já estão" em ENTREGAS_FUSION_TRACK —
+    aponte pra `EscritaFalsa.linhas` pra simular o round-trip de verdade."""
+
+    def __init__(self, nfs=None, erro=None, db2=None, erro_leitura=None):
         self.nfs = [NF] if nfs is None else nfs
         self.erro = erro
         self.chamadas = []
+        self.db2 = db2 if db2 is not None else []
+        self.erro_leitura = erro_leitura
+        self.leituras = 0
+
+    def ler_track(self, tabela, colunas, coluna_filtro, valores):
+        self.leituras += 1
+        if self.erro_leitura:
+            raise self.erro_leitura
+        return [dict(linha) for linha in self.db2 if linha.get(coluna_filtro) in set(valores)]
 
     def _r(self, nome, *args, **kw):
         self.chamadas.append((nome, args, kw))
@@ -255,7 +267,10 @@ def test_formato_desconhecido_e_ignorado_sem_chamar_ninguem(conn):
 def test_limite_por_ciclo_e_restantes(conn):
     _romaneio(conn, entregas=[{"t32_pedido_original": f"{i}_22161374", "t43_codigo_filial_erp": "1"} for i in range(5)])
     resultado = _processar(conn, limite=2)
-    assert resultado["GRAVADA"] == 2 and resultado["restantes"] == 3
+    # O dublê dá a mesma NF pra todo pedido (mesma linha no DB2): a 2ª do
+    # lote já encontra a 1ª gravada e conta como SEM_MUDANCA.
+    assert resultado.get("GRAVADA", 0) + resultado.get("SEM_MUDANCA", 0) == 2
+    assert resultado["restantes"] == 3
 
 
 def test_sem_nf_nao_mata_de_fome_a_reatualizacao(conn):

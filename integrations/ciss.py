@@ -877,6 +877,55 @@ class CissClient:
             (id_carga_fusion,),
         )
 
+    # --- Leitura em lote das tabelas de rastreio ---------------------------
+    # Pra comparar antes de gravar (`ciss_escrita.linha_identica`): uma
+    # consulta por tabela por ciclo, nunca uma por linha. Tabela e colunas
+    # vêm das constantes fixas de `ciss_escrita` (allow-list abaixo), nunca
+    # de entrada externa — só os valores do filtro são parâmetros.
+
+    _TABELAS_TRACK = frozenset(
+        {
+            "DBA.CARGAS_FUSION_TRACK",
+            "DBA.ENTREGAS_FUSION_TRACK",
+            "DBA.EVENTOS_FUSION_TRACK",
+            "DBA.ITENS_DEVOLVIDOS_FUSION_TRACK",
+        }
+    )
+    _LOTE_IN = 200
+
+    def ler_track(
+        self,
+        tabela: str,
+        colunas: Sequence[tuple[str, str]],
+        coluna_filtro: str,
+        valores: Sequence[int],
+    ) -> list[dict[str, object]]:
+        """Linhas de `tabela` com `coluna_filtro IN (valores)`, em lotes de
+        `_LOTE_IN`. CLOB volta como `VARCHAR(4000)` (mesmo motivo de
+        `get_carga_fusion_track`)."""
+        from integrations.ciss_escrita import TAMANHO_LEITURA_CLOB
+
+        if tabela not in self._TABELAS_TRACK:
+            raise ValueError(f"Tabela fora do rastreio: {tabela}")
+        nomes = {nome for nome, _ in colunas}
+        if coluna_filtro not in nomes or not all(re.fullmatch(r"[A-Z_]+", n) for n in nomes):
+            raise ValueError("Coluna inválida")
+        selecao = ", ".join(
+            f"CAST(SUBSTR({nome}, 1, {TAMANHO_LEITURA_CLOB}) AS VARCHAR({TAMANHO_LEITURA_CLOB})) AS {nome}"
+            if tipo.startswith("CLOB")
+            else nome
+            for nome, tipo in colunas
+        )
+        unicos = sorted({int(v) for v in valores if v is not None})
+        linhas: list[dict[str, object]] = []
+        for i in range(0, len(unicos), self._LOTE_IN):
+            lote = unicos[i : i + self._LOTE_IN]
+            linhas += self._fetch_all(
+                f"SELECT {selecao} FROM {tabela} WHERE {coluna_filtro} IN ({', '.join('?' * len(lote))})",
+                lote,
+            )
+        return linhas
+
     def _fetch_all(
         self, sql: str, params: Sequence[object] = (), timeout: int | None = None
     ) -> list[dict[str, object]]:

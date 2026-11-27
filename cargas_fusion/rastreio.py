@@ -34,6 +34,7 @@ from decimal import Decimal, InvalidOperation
 
 from integrations import discord
 from integrations.ciss import CissDbError
+from integrations import ciss_escrita
 from integrations.ciss_escrita import CissEscritaClient
 from integrations.fusion import FusionClient, FusionError
 
@@ -282,13 +283,35 @@ def _carga_para_setinterp(linha: sqlite3.Row) -> str | None:
     return str(linha["t10_id"]) if linha["t10_id"] is not None else None
 
 
+def ler_existentes(
+    ciss, tabela: str, colunas, chave: tuple[str, ...], coluna_filtro: str, valores
+) -> dict[tuple, dict] | None:
+    """Linhas que já estão no DB2, por chave — uma leitura por tabela por
+    ciclo, pra não regravar o que não mudou (`ciss_escrita.linha_identica`).
+    `None` (sem client, ou falha na leitura) = sem comparação: grava tudo,
+    como antes. Nunca impede uma gravação."""
+    if ciss is None or not valores:
+        return None if ciss is None else {}
+    try:
+        linhas = ciss.ler_track(tabela, colunas, coluna_filtro, list(valores))
+    except CissDbError:
+        logger.warning("Rastreio: leitura de %s falhou — gravando sem comparar", tabela)
+        return None
+    return {ciss_escrita.chave_de(linha, chave): linha for linha in linhas}
+
+
 def _internalizar(
     conn: sqlite3.Connection,
     escrita: CissEscritaClient,
     linha: sqlite3.Row,
     alertas: list[str],
     avisos: list[str],
+    existentes: dict[tuple, dict] | None = None,
 ) -> str:
+    """`existentes`: linhas de `CARGAS_FUSION_TRACK` já no DB2 (ver
+    `ler_existentes`). Linha idêntica não é regravada — resultado
+    `SEM_MUDANCA`, mas a pendência fica `INTERNALIZADO` e é confirmada
+    igual (o dado está no CISS, só não precisou de escrita)."""
     tipo = linha["tipo_int"]
     if tipo not in TIPOS_INTERNALIZADOS:
         _atualizar(conn, linha["id"], status="IGNORADO", erro=None)
@@ -306,11 +329,20 @@ def _internalizar(
 
     tentativas = linha["tentativas"] + 1
     registro, motivo = mapear_carga_track(json.loads(linha["payload"]))
+    sem_mudanca = False
     if registro is not None:
-        try:
-            escrita.upsert_carga_fusion_track(registro)
-        except CissDbError as exc:
-            motivo = f"Falha gravando no CISS: {exc}" if str(exc) else "Falha gravando no CISS (DB2 indisponível)"
+        chave = ciss_escrita.chave_de(registro, ciss_escrita.CHAVE_CARGAS)
+        existente = existentes.get(chave) if existentes is not None else None
+        sem_mudanca = ciss_escrita.linha_identica(registro, existente, ciss_escrita.COLUNAS_CARGAS_FUSION_TRACK)
+        if not sem_mudanca:
+            try:
+                escrita.upsert_carga_fusion_track(registro)
+            except CissDbError as exc:
+                motivo = f"Falha gravando no CISS: {exc}" if str(exc) else "Falha gravando no CISS (DB2 indisponível)"
+            else:
+                if existentes is not None:
+                    # Outra pendência do mesmo romaneio no mesmo ciclo compara com isto.
+                    existentes[chave] = registro
 
     if motivo is not None:
         _atualizar(conn, linha["id"], status="ERRO", erro=motivo, tentativas=tentativas)
@@ -327,7 +359,7 @@ def _internalizar(
             "STATUS_ROMANEIO — gravado com STATUSROMANEIO nulo"
         )
     _atualizar(conn, linha["id"], status="INTERNALIZADO", erro=None, tentativas=tentativas)
-    return "INTERNALIZADO"
+    return "SEM_MUDANCA" if sem_mudanca else "INTERNALIZADO"
 
 
 def _confirmar(
@@ -399,7 +431,11 @@ def _resumir_ciclo(resultado: dict) -> None:
         k: v for k, v in (resultado.get("eventos") or {}).items() if k not in ("recebidos", "restantes") and v
     }
     recebidos_eventos = (resultado.get("eventos") or {}).get("recebidos", 0)
-    if not (resultado.get("recebidas") or processadas or resultado.get("confirmadas") or entregas or eventos
+    # SEM_MUDANCA conta no resumo, mas sozinho não é "algo aconteceu":
+    # um ciclo que só conferiu e não gravou nada não posta no Discord.
+    mudou = lambda d: any(v for k, v in d.items() if k != "SEM_MUDANCA")  # noqa: E731
+    if not (resultado.get("recebidas") or mudou(processadas) or resultado.get("confirmadas") or mudou(entregas)
+            or mudou(eventos)
             or recebidos_eventos):
         return
     descricao = lambda d: " · ".join(f"{k.lower()}: **{v}**" for k, v in sorted(d.items())) or "—"  # noqa: E731
@@ -483,8 +519,16 @@ def executar_ciclo(
             "SELECT * FROM cargas_fusion_int_erp WHERE status IN ('RECEBIDO', 'ERRO') "
             "AND codigo_int IS NOT NULL ORDER BY codigo_int"
         ).fetchall()
+        existentes = ler_existentes(
+            ciss_client,
+            "DBA.CARGAS_FUSION_TRACK",
+            ciss_escrita.COLUNAS_CARGAS_FUSION_TRACK,
+            ciss_escrita.CHAVE_CARGAS,
+            "IDCARGAFUSION",
+            [linha["t10_id"] for linha in pendentes if linha["t10_id"] is not None and linha["tipo_int"] in TIPOS_INTERNALIZADOS],
+        )
         for linha in pendentes:
-            resultado = _internalizar(conn, escrita_client, linha, alertas, avisos)
+            resultado = _internalizar(conn, escrita_client, linha, alertas, avisos, existentes)
             contagem[resultado] = contagem.get(resultado, 0) + 1
 
         a_confirmar = conn.execute(
@@ -507,7 +551,9 @@ def executar_ciclo(
 
         # Eventos depois de tudo: mesma FK (romaneio em CARGAS_FUSION_TRACK),
         # e a sequência da entrega vem do payload do romaneio.
-        eventos = rastreio_eventos.processar_eventos(conn, fusion_client, escrita_client, alertas, avisos)
+        eventos = rastreio_eventos.processar_eventos(
+            conn, fusion_client, escrita_client, alertas, avisos, ciss=ciss_client
+        )
 
         if erro_coleta:
             logger.warning("Rastreio getIntErp: %s", erro_coleta)

@@ -35,6 +35,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+from integrations import ciss_escrita
 from integrations.ciss import CissDbError
 from integrations.fusion import FusionError
 
@@ -223,8 +224,14 @@ def _atualizar(conn: sqlite3.Connection, t10_id: int, pedido: str, **campos) -> 
 
 
 def processar_entrega(
-    conn: sqlite3.Connection, ciss, fusion, escrita, t10_id: int, linha: sqlite3.Row, entrega: dict
+    conn: sqlite3.Connection, ciss, fusion, escrita, t10_id: int, linha: sqlite3.Row, entrega: dict,
+    existentes: dict[tuple, dict] | None = None,
 ) -> str:
+    """`existentes`: linhas de `ENTREGAS_FUSION_TRACK` já no DB2 (ver
+    `rastreio.ler_existentes`). Se toda NF do pedido já está igual, nada é
+    gravado: `SEM_MUDANCA`, a linha local continua `GRAVADA`. É o caso
+    comum da reatualização de romaneio em viagem, que antes regravava
+    tudo a cada ciclo."""
     pedido = linha["pedido_erp"]
     tentativas = linha["tentativas"] + 1
     identificado = identificar_pedido(pedido, entrega.get("t43_codigo_filial_erp"))
@@ -263,22 +270,33 @@ def processar_entrega(
         return "ERRO"
 
     linhas_track = montar_linhas(t10_id, nfs, entrega, detalhe)
+    gravadas = 0
     try:
         for registro in linhas_track:
+            chave = ciss_escrita.chave_de(registro, ciss_escrita.CHAVE_ENTREGAS)
+            existente = existentes.get(chave) if existentes is not None else None
+            if ciss_escrita.linha_identica(registro, existente, ciss_escrita.COLUNAS_ENTREGAS_FUSION_TRACK):
+                continue
             escrita.upsert_entrega_fusion_track(registro)
+            gravadas += 1
+            if existentes is not None:
+                existentes[chave] = registro
     except CissDbError as exc:
         _atualizar(conn, t10_id, pedido, situacao="ERRO", tentativas=tentativas,
                    erro=f"Falha gravando no CISS: {exc}" if str(exc) else "Falha gravando no CISS")
         return "ERRO"
 
+    # `gravada_em` = última escrita de verdade no DB2; `atualizado_em` =
+    # última conferência (é o que ordena a fila de reatualização).
     with conn:
         conn.execute(
             "UPDATE cargas_fusion_entrega_track SET situacao = 'GRAVADA', erro = NULL, status_entrega = ?, "
-            "tentativas = 0, gravada_em = CURRENT_TIMESTAMP, atualizado_em = CURRENT_TIMESTAMP "
-            "WHERE t10_id = ? AND pedido_erp = ?",
+            "tentativas = 0, atualizado_em = CURRENT_TIMESTAMP"
+            + (", gravada_em = CURRENT_TIMESTAMP" if gravadas or linha["gravada_em"] is None else "")
+            + " WHERE t10_id = ? AND pedido_erp = ?",
             (linhas_track[0]["STATUSENTREGA"], t10_id, pedido),
         )
-    return "GRAVADA"
+    return "GRAVADA" if gravadas else "SEM_MUDANCA"
 
 
 def processar_entregas(
@@ -314,10 +332,20 @@ def processar_entregas(
     fila.sort(key=lambda item: (item[0], item[1]))
 
     contagem: dict[str, int] = {}
-    for _, _, linha in fila[:limite]:
+    lote = fila[:limite]
+    # Uma leitura só pro lote inteiro (por romaneio, não por linha).
+    existentes = _r().ler_existentes(
+        ciss,
+        "DBA.ENTREGAS_FUSION_TRACK",
+        ciss_escrita.COLUNAS_ENTREGAS_FUSION_TRACK,
+        ciss_escrita.CHAVE_ENTREGAS,
+        "IDCARGAFUSION",
+        [linha["t10_id"] for _, _, linha in lote],
+    )
+    for _, _, linha in lote:
         t10_id = linha["t10_id"]
         entrega = _entrega_do_payload(payloads[t10_id]["payload"], linha["pedido_erp"])
-        resultado = processar_entrega(conn, ciss, fusion, escrita, t10_id, linha, entrega)
+        resultado = processar_entrega(conn, ciss, fusion, escrita, t10_id, linha, entrega, existentes)
         contagem[resultado] = contagem.get(resultado, 0) + 1
         # IGNORADA/OUTRO_ROMANEIO são terminais (nunca reprocessados) —
         # aviso sai uma vez só, sem precisar de controle extra.

@@ -503,11 +503,16 @@ export interface ResultadoCicloRastreio {
   status: "executado" | "pulado" | "nao_configurado";
   motivo?: string;
   recebidas?: number;
-  processadas?: Partial<Record<StatusRastreio, number>>;
+  /** `SEM_MUDANCA` só aparece no resultado do ciclo (já igual no DB2, não
+   * regravado) — a pendência em si fica `INTERNALIZADO`. Mesmo vale pra
+   * entregas (`GRAVADA`) e eventos (`GRAVADO`). */
+  processadas?: Partial<Record<StatusRastreio | "SEM_MUDANCA", number>>;
   confirmadas?: number;
   falhas_confirmacao?: number;
-  entregas?: (Partial<Record<SituacaoEntregaRastreio, number>> & { restantes?: number }) | null;
-  eventos?: (Partial<Record<StatusEventoRastreio, number>> & { recebidos?: number; restantes?: number }) | null;
+  entregas?: (Partial<Record<SituacaoEntregaRastreio | "SEM_MUDANCA", number>> & { restantes?: number }) | null;
+  eventos?:
+    | (Partial<Record<StatusEventoRastreio | "SEM_MUDANCA", number>> & { recebidos?: number; restantes?: number })
+    | null;
   erro_coleta?: string | null;
   duracao_ms?: number;
 }

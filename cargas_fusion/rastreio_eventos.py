@@ -39,6 +39,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
+from integrations import ciss_escrita
 from integrations.ciss import CissDbError
 from integrations.fusion import FusionError
 
@@ -242,7 +243,30 @@ def _atualizar(conn: sqlite3.Connection, t15_id: int, **campos) -> None:
         )
 
 
-def _processar_evento(conn, fusion, escrita, linha, payloads, agora, avisos) -> str:
+def _ja_gravado(linha_evento: dict, itens: list[dict], existentes) -> bool:
+    """Evento e todos os itens dele já iguais no DB2. Item a mais no DB2
+    não conta: o MERGE também nunca apaga item."""
+    if existentes is None:
+        return False
+    eventos_db, itens_db = existentes
+    chave = ciss_escrita.chave_de(linha_evento, ciss_escrita.CHAVE_EVENTOS)
+    if not ciss_escrita.linha_identica(linha_evento, eventos_db.get(chave), ciss_escrita.COLUNAS_EVENTOS_FUSION_TRACK):
+        return False
+    return all(
+        ciss_escrita.linha_identica(
+            item,
+            itens_db.get(ciss_escrita.chave_de(item, ciss_escrita.CHAVE_ITENS_DEVOLVIDOS)),
+            ciss_escrita.COLUNAS_ITENS_DEVOLVIDOS_FUSION_TRACK,
+        )
+        for item in itens
+    )
+
+
+def _processar_evento(conn, fusion, escrita, linha, payloads, agora, avisos, existentes=None) -> str:
+    """`existentes`: `(eventos, itens)` já no DB2, por chave (ver
+    `rastreio.ler_existentes`). Evento idêntico não é regravado
+    (`SEM_MUDANCA`, fica `GRAVADO`) — acontece numa retentativa depois de
+    uma gravação que chegou ao DB2 mas falhou antes de marcar aqui."""
     evento = json.loads(linha["payload"])
     dado = payloads.get(linha["t10_id"]) if linha["t10_id"] is not None else None
     if dado is None:
@@ -262,7 +286,9 @@ def _processar_evento(conn, fusion, escrita, linha, payloads, agora, avisos) -> 
             itens_brutos = fusion.obtem_itens_devolvidos(str(linha["t15_id"]))
             _atualizar(conn, linha["t15_id"], itens_devolvidos=json.dumps(itens_brutos, ensure_ascii=False))
         itens, problemas = mapear_itens(linha_evento, itens_brutos or [])
-        escrita.gravar_evento_fusion_track(linha_evento, itens)
+        sem_mudanca = _ja_gravado(linha_evento, itens, existentes)
+        if not sem_mudanca:
+            escrita.gravar_evento_fusion_track(linha_evento, itens)
     except (FusionError, CissDbError) as exc:
         _atualizar(
             conn, linha["t15_id"], status="ERRO", erro=f"{type(exc).__name__}: {exc}"[:500],
@@ -275,10 +301,28 @@ def _processar_evento(conn, fusion, escrita, linha, payloads, agora, avisos) -> 
         conn, linha["t15_id"], status="GRAVADO", erro="; ".join(problemas) or None,
         itens_gravados=len(itens), gravado_em=agora.strftime("%Y-%m-%d %H:%M:%S"),
     )
-    return "GRAVADO"
+    return "SEM_MUDANCA" if sem_mudanca else "GRAVADO"
 
 
-def processar_eventos(conn, fusion, escrita, alertas, avisos, *, agora: datetime | None = None) -> dict:
+def _ler_existentes(ciss, fila, payloads) -> tuple[dict, dict] | None:
+    ids = [
+        linha["t15_id"] for linha in fila if linha["t10_id"] in payloads
+    ][:LIMITE_GRAVACOES_POR_CICLO]
+    ler = _r().ler_existentes
+    eventos = ler(ciss, "DBA.EVENTOS_FUSION_TRACK", ciss_escrita.COLUNAS_EVENTOS_FUSION_TRACK,
+                  ciss_escrita.CHAVE_EVENTOS, "IDEVENTOFUSION", ids)
+    if eventos is None:
+        return None
+    itens = ler(ciss, "DBA.ITENS_DEVOLVIDOS_FUSION_TRACK", ciss_escrita.COLUNAS_ITENS_DEVOLVIDOS_FUSION_TRACK,
+                ciss_escrita.CHAVE_ITENS_DEVOLVIDOS, "IDEVENTOFUSION", ids)
+    if itens is None:
+        return None
+    return eventos, itens
+
+
+def processar_eventos(
+    conn, fusion, escrita, alertas, avisos, *, agora: datetime | None = None, ciss=None
+) -> dict:
     """Drena a fila do Fusion (grava cru) e depois grava no CISS o que é
     do escopo, em ordem de `t15_id`."""
     # Datas do Fusion são hora de Brasília sem fuso; o pod roda em UTC.
@@ -317,13 +361,14 @@ def processar_eventos(conn, fusion, escrita, alertas, avisos, *, agora: datetime
         f"SELECT * FROM cargas_fusion_evento WHERE status IN ({marcas}) ORDER BY t15_id",
         _SITUACOES_A_PROCESSAR,
     ).fetchall()
+    existentes = _ler_existentes(ciss, fila, payloads)
     gravacoes = 0
     for linha in fila:
         dentro = linha["t10_id"] in payloads
         if dentro and gravacoes >= LIMITE_GRAVACOES_POR_CICLO:
             contagem["restantes"] = contagem.get("restantes", 0) + 1
             continue
-        resultado = _processar_evento(conn, fusion, escrita, linha, payloads, agora, avisos)
+        resultado = _processar_evento(conn, fusion, escrita, linha, payloads, agora, avisos, existentes)
         gravacoes += dentro
         contagem[resultado] = contagem.get(resultado, 0) + 1
         if resultado == "ERRO" and linha["tentativas"] == 0:
