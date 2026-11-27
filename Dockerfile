@@ -24,10 +24,15 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt
 
-COPY app.py config.py database.py schema.sql ./
+COPY app.py config.py configuracoes.py database.py schema.sql ./
 COPY auth ./auth
 COPY cargas_fusion ./cargas_fusion
 COPY integrations ./integrations
+
+# Falha o build (e o job docker-build do CI) se um módulo novo da raiz
+# ficar de fora dos COPY acima — já derrubou um deploy (configuracoes.py,
+# 2026-11-27). Só importa, não chama create_app (nada de banco nem rede).
+RUN python -c "import app"
 
 RUN useradd --create-home --shell /usr/sbin/nologin appuser \
     && mkdir -p /app/data \
